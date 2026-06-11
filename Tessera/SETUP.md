@@ -51,8 +51,8 @@ This is the half that has to happen on Apple's side before multiplayer
 works. Solo play does not need any of this.
 
 1. **App Store Connect → My Apps → New App**.
-   - Bundle ID: `io.witlox.tessera` (matches `project.yml`). If you change
-     it, edit `PRODUCT_BUNDLE_IDENTIFIER` and regenerate the project.
+   - Bundle ID: `io.witlox.TesseraCrossword` (matches `project.yml`). If you
+     change it, edit `PRODUCT_BUNDLE_IDENTIFIER` and regenerate the project.
    - Platform: iOS.
    - SKU: anything stable, e.g. `tessera-001`.
 2. **Certificates, Identifiers & Profiles → Identifiers**:
