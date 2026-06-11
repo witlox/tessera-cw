@@ -6,7 +6,6 @@ struct PlayView: View {
     @Environment(\.dismiss) private var dismiss
 
     @Bindable var solo: SoloViewModel
-    @State private var showRevealMenu = false
     @State private var showCompletion = false
 
     var body: some View {
@@ -18,6 +17,7 @@ struct PlayView: View {
             GeometryReader { geo in
                 BoardView(puzzle: solo.puzzle,
                           state: solo.state,
+                          wrongCells: solo.showErrors ? solo.state.wrongCells(solo.puzzle) : [],
                           select: { c, o in solo.select(c, orientation: o) })
                     .frame(width: min(geo.size.width, geo.size.height),
                            height: min(geo.size.width, geo.size.height))
@@ -41,7 +41,7 @@ struct PlayView: View {
                     Button("Reveal word") { solo.revealEntry() }
                     Button("Reveal puzzle", role: .destructive) { solo.revealAll() }
                     Divider()
-                    Button("Mark wrong cells") { /* visual handled by board */ }
+                    Toggle("Mark wrong cells", isOn: $solo.showErrors)
                 } label: {
                     Label("Reveal", systemImage: "eye")
                 }

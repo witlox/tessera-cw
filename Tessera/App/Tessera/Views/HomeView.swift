@@ -5,6 +5,7 @@ struct HomeView: View {
     @Environment(AppModel.self) private var model
     @State private var showingNew = false
     @State private var showingMultiplayer = false
+    @State private var confirmDiscardSolo = false
 
     var body: some View {
         List {
@@ -16,7 +17,7 @@ struct HomeView: View {
                         ResumeCard(solo: solo)
                     }
                     Button(role: .destructive) {
-                        model.endSolo()
+                        confirmDiscardSolo = true
                     } label: {
                         Label("Discard solo game", systemImage: "trash")
                     }
@@ -61,6 +62,12 @@ struct HomeView: View {
         }
         .sheet(isPresented: $showingMultiplayer) {
             MultiplayerView()
+        }
+        .alert("Discard solo game?", isPresented: $confirmDiscardSolo) {
+            Button("Discard", role: .destructive) { model.endSolo() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Your in-progress puzzle will be lost.")
         }
     }
 }

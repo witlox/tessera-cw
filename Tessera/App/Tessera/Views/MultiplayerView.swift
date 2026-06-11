@@ -10,6 +10,7 @@ struct MultiplayerView: View {
     @State private var themeSlug: String? = nil
     @State private var inFlight = false
     @State private var error: String?
+    @State private var signingIn = false
 
     var body: some View {
         NavigationStack {
@@ -19,9 +20,24 @@ struct MultiplayerView: View {
                         Label("Signed into Game Center", systemImage: "checkmark.seal")
                             .foregroundStyle(.green)
                     } else {
-                        Label("Not signed in — open Game Center in Settings",
+                        Label("Not signed in to Game Center",
                               systemImage: "person.crop.circle.badge.exclamationmark")
                             .foregroundStyle(.orange)
+                        Button {
+                            Task { await signIn() }
+                        } label: {
+                            HStack {
+                                Spacer()
+                                if signingIn {
+                                    ProgressView()
+                                } else {
+                                    Text("Sign in to Game Center")
+                                        .fontWeight(.semibold)
+                                }
+                                Spacer()
+                            }
+                        }
+                        .disabled(signingIn)
                     }
                 }
 
@@ -88,6 +104,16 @@ struct MultiplayerView: View {
                 }
             }
         )
+    }
+
+    private func signIn() async {
+        signingIn = true
+        defer { signingIn = false }
+        do {
+            try await model.match_service.authenticate()
+        } catch {
+            self.error = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+        }
     }
 
     private func startMatch() async {

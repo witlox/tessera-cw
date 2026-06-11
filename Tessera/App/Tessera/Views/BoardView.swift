@@ -6,6 +6,10 @@ import TesseraKit
 struct BoardView: View {
     let puzzle: Puzzle
     let state: GameState
+    /// Cells to highlight as incorrect. Caller computes this so BoardView
+    /// stays dumb — solo passes `state.wrongCells(puzzle)` when its
+    /// `showErrors` toggle is on; multiplayer passes [].
+    var wrongCells: Set<Coord> = []
     /// Tap → set selection. Orientation is inferred from the entry the cell sits on.
     let select: (Coord, Orientation) -> Void
 
@@ -48,9 +52,10 @@ struct BoardView: View {
         let isSelected = state.selection?.origin == coord
         let inEntry = isInCurrentEntry(coord)
         let isRevealed = state.revealed.contains(coord) || state.revealedByOpponent.contains(coord)
+        let isWrong = wrongCells.contains(coord)
         ZStack {
             Rectangle()
-                .fill(background(isSelected: isSelected, inEntry: inEntry))
+                .fill(background(isSelected: isSelected, inEntry: inEntry, isWrong: isWrong))
             Rectangle()
                 .stroke(Color.primary.opacity(0.4), lineWidth: 0.5)
             if let letter {
@@ -70,7 +75,8 @@ struct BoardView: View {
         .frame(width: dim, height: dim)
     }
 
-    private func background(isSelected: Bool, inEntry: Bool) -> Color {
+    private func background(isSelected: Bool, inEntry: Bool, isWrong: Bool) -> Color {
+        if isWrong { return Color.red.opacity(isSelected ? 0.45 : 0.25) }
         if isSelected { return Color.accentColor.opacity(0.35) }
         if inEntry { return Color.accentColor.opacity(0.12) }
         return Color(.systemBackground)
@@ -105,8 +111,6 @@ struct BoardView: View {
     private func clueNumber(at coord: Coord) -> Int? {
         Self.numbering(puzzle)[coord]
     }
-
-    private static var numberingCache: [ObjectIdentifier: [Coord: Int]] = [:]
 
     static func numbering(_ puzzle: Puzzle) -> [Coord: Int] {
         // Sort origins reading-order; same origin can host both across and down.

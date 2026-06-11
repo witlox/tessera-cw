@@ -15,6 +15,8 @@ final class SoloViewModel {
 
     private(set) var state: GameState
     private(set) var lastTickAt: Date = Date()
+    /// Reveal-menu toggle: when true, BoardView paints wrong cells red.
+    var showErrors: Bool = false
 
     init(corpus: CorpusStore, puzzle: Puzzle, languages: [Lang],
          difficulty: Generator.Difficulty, themeSlug: String?) {

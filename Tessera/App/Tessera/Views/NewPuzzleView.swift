@@ -12,7 +12,10 @@ struct NewPuzzleView: View {
     @State private var poolSize: Int = 0
     @State private var poolError: String?
 
-    private let minPlayablePool = 12
+    // Generator floor is 4 entries; require ≥6 so even the smallest themed
+    // mini-puzzle (cooking × non-EN) is playable. Anything below 6 won't
+    // produce a meaningfully interlocking grid.
+    private let minPlayablePool = 6
 
     var body: some View {
         NavigationStack {

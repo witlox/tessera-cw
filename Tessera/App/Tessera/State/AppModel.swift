@@ -87,4 +87,8 @@ final class AppModel {
         SoloStore.clear()
         solo = nil
     }
+
+    func endMatch() {
+        match = nil
+    }
 }

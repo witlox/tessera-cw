@@ -13,6 +13,7 @@ struct MatchPlayView: View {
     @State private var selection: GameState.Selection?
     @State private var error: String?
     @State private var submitting = false
+    @State private var showCompletion = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -72,6 +73,20 @@ struct MatchPlayView: View {
         .onChange(of: match.payload.moves.count) { _, _ in
             // Inbound event flipped whose turn it is.
             match.isMyTurn ? startClock() : clock.reset()
+            if match.state.isComplete(match.puzzle) { showCompletion = true }
+        }
+        .onChange(of: match.didEnd) { _, ended in
+            if ended { showCompletion = true }
+        }
+        .alert("Match complete", isPresented: $showCompletion) {
+            Button("Done") {
+                model.endMatch()
+                dismiss()
+            }
+        } message: {
+            Text(match.didEnd && !match.state.isComplete(match.puzzle)
+                 ? "The other player left or the match timed out."
+                 : "Puzzle solved.")
         }
     }
 
@@ -104,7 +119,7 @@ struct MatchPlayView: View {
 
     private func startClock() {
         clock.onExpire = { @MainActor in
-            Task { await passTurn(auto: true) }
+            Task { await passTurn() }
         }
         clock.start()
     }
@@ -139,7 +154,7 @@ struct MatchPlayView: View {
         }
     }
 
-    private func passTurn(auto: Bool = false) async {
+    private func passTurn() async {
         guard match.isMyTurn, !submitting else { return }
         submitting = true
         clock.stop()

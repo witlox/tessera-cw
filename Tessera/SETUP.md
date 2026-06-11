@@ -91,3 +91,7 @@ The bundled DB is read-only; the app never writes to it.
   is a 1024×1024 typographic "T" rendered by a Swift script. Replace with
   whatever final art you ship — Xcode warns if any required icon size is
   missing.
+- `App/Tessera/Resources/PrivacyInfo.xcprivacy` declares no tracking, no
+  data collection, and the Required-Reason API categories actually touched
+  (file timestamps for solo-game persistence; system boot time via SQLite).
+  Update if you add analytics or networking outside GameKit.

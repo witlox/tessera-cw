@@ -12,6 +12,9 @@ final class MatchViewModel {
     let me: String
     var payload: MatchPayload
     var state: GameState
+    /// Set when GameKit fires `.matchEnded` (opponent quit, timeout, etc.).
+    /// The view shows a completion alert and routes back to Home.
+    var didEnd: Bool = false
 
     private let service: MatchService
 
@@ -64,11 +67,17 @@ final class MatchViewModel {
 
     /// Subscribe to `service.inbound`; on every event, reload the
     /// authoritative payload from the backing store and refresh state.
+    /// Surfaces `.matchEnded` events via `didEnd` so the view can route out.
     func startListening() {
         Task { [service, handle, weak self] in
-            for await _ in service.inbound {
-                guard let fresh = try? await service.payload(for: handle) else { continue }
-                await MainActor.run { self?.refresh(payload: fresh) }
+            for await event in service.inbound {
+                guard let self else { break }
+                if let fresh = try? await service.payload(for: handle) {
+                    await MainActor.run { self.refresh(payload: fresh) }
+                }
+                if case .matchEnded = event {
+                    await MainActor.run { self.didEnd = true }
+                }
             }
         }
     }
