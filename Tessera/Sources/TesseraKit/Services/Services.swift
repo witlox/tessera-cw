@@ -31,12 +31,19 @@ public protocol MatchService {
     /// Drives Game Center sign-in if needed. No-op on subsequent calls.
     func authenticate() async throws
 
-    /// Find / create a turn-based match. Returns the handle plus the initial
-    /// payload (matters on first turn: the seed and player order are set
-    /// here, and the local view needs them to render before the next
-    /// inbound event arrives).
-    func findMatch(languages: [Lang], difficulty: Generator.Difficulty,
-                   themeSlug: String?) async throws -> (MatchHandle, MatchPayload)
+    /// Attach to a match the user just picked in the matchmaker UI (or one
+    /// the system delivered via a friend invite). If `matchData` is empty
+    /// — i.e. we're the player who initiated — seed it with
+    /// `seedingIfEmpty`. Returns the handle plus the initial payload so
+    /// the local view can render before the next inbound event arrives.
+    func attach(matchID: String,
+                seedingIfEmpty: MatchConfig?) async throws -> (MatchHandle, MatchPayload)
+
+    /// Stream of match IDs that arrived via the user picking from the
+    /// matchmaker, a friend invite landing, or a background turn event on
+    /// a not-yet-attached match. AppModel listens here and decides whether
+    /// to attach (and create a view-model).
+    var newMatches: AsyncStream<String> { get }
 
     /// Reloads the authoritative payload from the backing store. Called
     /// after every inbound event to absorb the opponent's last move.

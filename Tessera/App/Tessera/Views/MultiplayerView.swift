@@ -8,9 +8,9 @@ struct MultiplayerView: View {
     @State private var languages: Set<Lang> = [.en]
     @State private var difficulty: Generator.Difficulty = .medium
     @State private var themeSlug: String? = nil
-    @State private var inFlight = false
     @State private var error: String?
     @State private var signingIn = false
+    @State private var showMatchmaker = false
 
     var body: some View {
         NavigationStack {
@@ -62,19 +62,19 @@ struct MultiplayerView: View {
 
                 Section {
                     Button {
-                        Task { await startMatch() }
+                        startMatchmaker()
                     } label: {
                         HStack {
                             Spacer()
-                            if inFlight {
-                                ProgressView()
-                            } else {
-                                Text("Find a match").fontWeight(.semibold)
-                            }
+                            Text("Invite a friend or auto-match")
+                                .fontWeight(.semibold)
                             Spacer()
                         }
                     }
-                    .disabled(inFlight || !model.match_service.isAuthenticated)
+                    .disabled(!model.match_service.isAuthenticated || languages.isEmpty)
+                } footer: {
+                    Text("Game Center's matchmaker can add specific friends (or anyone in your contacts), or auto-match you with another player.")
+                        .font(.footnote).foregroundStyle(.secondary)
                 }
 
                 if let error {
@@ -87,6 +87,28 @@ struct MultiplayerView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
+                }
+            }
+            #if canImport(GameKit) && canImport(UIKit)
+            .sheet(isPresented: $showMatchmaker) {
+                MatchmakerSheet(
+                    onCancel: { showMatchmaker = false },
+                    onError: { err in
+                        self.error = (err as? LocalizedError)?.errorDescription
+                            ?? String(describing: err)
+                        showMatchmaker = false
+                    }
+                )
+                .ignoresSafeArea()
+            }
+            #endif
+            // When AppModel attaches the new match, dismiss the matchmaker
+            // sheet and this whole MultiplayerView — we want the user to
+            // land in MatchPlayView via Home's "Active match" card.
+            .onChange(of: model.match != nil) { _, hasMatch in
+                if hasMatch {
+                    showMatchmaker = false
+                    dismiss()
                 }
             }
         }
@@ -116,28 +138,14 @@ struct MultiplayerView: View {
         }
     }
 
-    private func startMatch() async {
-        inFlight = true
-        defer { inFlight = false }
-        do {
-            let langs = Lang.allCases.filter { languages.contains($0) }
-            let (handle, payload) = try await model.match_service.findMatch(
-                languages: langs, difficulty: difficulty, themeSlug: themeSlug)
-            // Reproduce the puzzle locally from the seed.
-            guard let corpus = model.corpus else { return }
-            let pool = try corpus.cluedPool(languages: langs, themeSlug: themeSlug,
-                                            minLen: 3, maxLen: 11)
-            let generator = Generator(pool: pool)
-            let puzzle = generator.generate(seed: handle.config.seed)
-            let vm = MatchViewModel(service: model.match_service,
-                                    handle: handle, puzzle: puzzle,
-                                    me: model.localPlayerID,
-                                    payload: payload)
-            vm.startListening()
-            model.match = vm
-            dismiss()
-        } catch {
-            self.error = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
-        }
+    private func startMatchmaker() {
+        let langs = Lang.allCases.filter { languages.contains($0) }
+        // Stash the player-A config for AppModel to consume when the new
+        // match arrives via the player listener.
+        model.pendingMatchConfig = AppModel.PendingMatchConfig(
+            languages: langs, difficulty: difficulty, themeSlug: themeSlug
+        )
+        error = nil
+        showMatchmaker = true
     }
 }

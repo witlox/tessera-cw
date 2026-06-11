@@ -37,20 +37,7 @@ struct PlayView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Menu {
-                    Button("Reveal letter") { solo.revealLetter() }
-                    Button("Reveal word") { solo.revealEntry() }
-                    Button("Reveal puzzle", role: .destructive) { solo.revealAll() }
-                    Divider()
-                    // Button with state-aware label, not Toggle — Toggle inside
-                    // a Menu whose parent re-renders frequently (every keystroke
-                    // here) spams "updateVisibleMenuWithBlock while no context
-                    // menu is visible" warnings.
-                    Button {
-                        solo.showErrors.toggle()
-                    } label: {
-                        Label(solo.showErrors ? "Hide wrong cells" : "Mark wrong cells",
-                              systemImage: solo.showErrors ? "checkmark" : "exclamationmark.triangle")
-                    }
+                    RevealMenuContent(solo: solo)
                 } label: {
                     Label("Reveal", systemImage: "eye")
                 }
@@ -76,5 +63,28 @@ struct PlayView: View {
         let m = seconds / 60, s = seconds % 60
         let timeStr = m > 0 ? "\(m)m \(s)s" : "\(s)s"
         return "Solved in \(timeStr)."
+    }
+}
+
+/// Lives in its own view so its body only re-runs when `solo.showErrors`
+/// changes — not on every keystroke. PlayView's body re-renders on each
+/// `solo.state` mutation; if the Menu's content lived inline it would
+/// re-render too, and SwiftUI would call
+/// `UIContextMenuInteraction.updateVisibleMenuWithBlock` against an
+/// invisible menu every time, spamming the console.
+private struct RevealMenuContent: View {
+    let solo: SoloViewModel
+
+    var body: some View {
+        Button("Reveal letter") { solo.revealLetter() }
+        Button("Reveal word") { solo.revealEntry() }
+        Button("Reveal puzzle", role: .destructive) { solo.revealAll() }
+        Divider()
+        Button {
+            solo.showErrors.toggle()
+        } label: {
+            Label(solo.showErrors ? "Hide wrong cells" : "Mark wrong cells",
+                  systemImage: solo.showErrors ? "checkmark" : "exclamationmark.triangle")
+        }
     }
 }

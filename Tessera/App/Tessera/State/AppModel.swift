@@ -26,6 +26,17 @@ final class AppModel {
     /// is active.
     var localPlayerID: String = ""
 
+    /// Filled by `MultiplayerView` right before it presents the matchmaker.
+    /// When `newMatches` fires for a brand-new match we initiated, we use
+    /// this to seed its `matchData`. Cleared once consumed.
+    var pendingMatchConfig: PendingMatchConfig?
+
+    struct PendingMatchConfig: Sendable {
+        let languages: [Lang]
+        let difficulty: Generator.Difficulty
+        let themeSlug: String?
+    }
+
     init() {
         #if canImport(GameKit)
         // GameKit works in the simulator with a Sandbox Game Center account
@@ -57,6 +68,50 @@ final class AppModel {
                 self?.localPlayerID = GKLocalPlayer.local.gamePlayerID
             }
             #endif
+        }
+        // Listen for matchmaker-picked / friend-invite-arrived matches.
+        Task { [weak self] in
+            guard let stream = self?.match_service.newMatches else { return }
+            for await matchID in stream {
+                await self?.handleNewMatch(matchID: matchID)
+            }
+        }
+    }
+
+    /// Called when GameKit reports a match became active for us. Decides
+    /// whether to attach (and surface it to the UI) using `pendingMatchConfig`
+    /// if present — that's the player A path (we initiated). Otherwise it's
+    /// player B (we accepted an invite) and the matchData already has the
+    /// config player A seeded.
+    func handleNewMatch(matchID: String) async {
+        // If a match is already in play for this ID, ignore duplicate events.
+        if let existing = match, existing.handle.id == matchID { return }
+
+        let seedConfig: MatchConfig? = pendingMatchConfig.map { pc in
+            MatchConfig(seed: UInt64.random(in: 1...UInt64.max),
+                        languages: pc.languages,
+                        difficulty: pc.difficulty,
+                        themeSlug: pc.themeSlug)
+        }
+        pendingMatchConfig = nil
+
+        do {
+            let (handle, payload) = try await match_service.attach(
+                matchID: matchID, seedingIfEmpty: seedConfig)
+            guard let corpus else { return }
+            let pool = try corpus.cluedPool(languages: handle.config.languages,
+                                            themeSlug: handle.config.themeSlug,
+                                            minLen: 3, maxLen: 11)
+            let generator = Generator(pool: pool)
+            let puzzle = generator.generate(seed: handle.config.seed)
+            let vm = MatchViewModel(service: match_service, handle: handle,
+                                    puzzle: puzzle, me: localPlayerID,
+                                    payload: payload)
+            vm.startListening()
+            self.match = vm
+        } catch {
+            corpusError = (error as? LocalizedError)?.errorDescription
+                ?? String(describing: error)
         }
     }
 

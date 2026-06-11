@@ -12,6 +12,9 @@ public final class GameKitMatchService: NSObject, MatchService, GKLocalPlayerLis
     private var continuation: AsyncStream<MatchEvent>.Continuation?
     public let inbound: AsyncStream<MatchEvent>
 
+    private var newMatchesContinuation: AsyncStream<String>.Continuation?
+    public let newMatches: AsyncStream<String>
+
     /// Caller-supplied turn timeout in seconds; the 60s shot clock is enforced
     /// at the UI layer too, but we also tell GameKit so a stalled opponent
     /// can be skipped server-side after a generous grace period.
@@ -25,8 +28,11 @@ public final class GameKitMatchService: NSObject, MatchService, GKLocalPlayerLis
         self.turnTimeout = turnTimeout
         var cont: AsyncStream<MatchEvent>.Continuation!
         self.inbound = AsyncStream { cont = $0 }
+        var nm: AsyncStream<String>.Continuation!
+        self.newMatches = AsyncStream { nm = $0 }
         super.init()
         self.continuation = cont
+        self.newMatchesContinuation = nm
     }
 
     // MARK: - Authentication
@@ -52,37 +58,24 @@ public final class GameKitMatchService: NSObject, MatchService, GKLocalPlayerLis
         }
     }
 
-    // MARK: - Matchmaking (programmatic, UI-less)
+    // MARK: - Attach (matchmaker UI feeds match IDs to AppModel via newMatches)
 
-    public func findMatch(languages: [Lang], difficulty: Generator.Difficulty,
-                          themeSlug: String?) async throws -> (MatchHandle, MatchPayload) {
+    public func attach(matchID: String,
+                       seedingIfEmpty: MatchConfig?) async throws -> (MatchHandle, MatchPayload) {
         guard isAuthenticated else { throw MatchError.notAuthenticated }
-        let request = GKMatchRequest()
-        request.minPlayers = 2; request.maxPlayers = 2
-        request.defaultNumberOfPlayers = 2
-
-        let gkMatch: GKTurnBasedMatch = try await withCheckedThrowingContinuation { cont in
-            GKTurnBasedMatch.find(for: request) { match, error in
-                if let error { cont.resume(throwing: error); return }
-                guard let match else { cont.resume(throwing: MatchError.noMatch); return }
-                cont.resume(returning: match)
-            }
-        }
-
-        // First turn: seed matchData. Subsequent rejoins: load what's there.
-        if (gkMatch.matchData?.isEmpty ?? true) {
-            let seed = UInt64.random(in: 1...UInt64.max)
-            let config = MatchConfig(seed: seed, languages: languages,
-                                     difficulty: difficulty, themeSlug: themeSlug)
-            let players = gkMatch.participants.compactMap { $0.player?.gamePlayerID }
-            let payload = MatchPayload(config: config, players: players, createdAt: Date())
-            let data = try MoveCodec.encode(payload)
-            try await save(matchData: data, in: gkMatch, endTurn: false)
-            return (MatchHandle(id: gkMatch.matchID, config: config), payload)
-        } else {
-            let payload = try MoveCodec.decode(gkMatch.matchData ?? Data())
+        let gkMatch = try await load(matchID: matchID)
+        if let data = gkMatch.matchData, !data.isEmpty {
+            // Resumed match (or the opponent has already seeded it).
+            let payload = try MoveCodec.decode(data)
             return (MatchHandle(id: gkMatch.matchID, config: payload.config), payload)
         }
+        // Fresh match — we're the player who initiated it.
+        guard let config = seedingIfEmpty else { throw MatchError.notSeeded }
+        let players = gkMatch.participants.compactMap { $0.player?.gamePlayerID }
+        let payload = MatchPayload(config: config, players: players, createdAt: Date())
+        let encoded = try MoveCodec.encode(payload)
+        try await save(matchData: encoded, in: gkMatch, endTurn: false)
+        return (MatchHandle(id: gkMatch.matchID, config: config), payload)
     }
 
     public func payload(for handle: MatchHandle) async throws -> MatchPayload {
@@ -127,6 +120,14 @@ public final class GameKitMatchService: NSObject, MatchService, GKLocalPlayerLis
 
     public func player(_ player: GKPlayer, receivedTurnEventFor match: GKTurnBasedMatch,
                        didBecomeActive: Bool) {
+        // didBecomeActive=true means the user just opened (or was just sent
+        // to) this match — either from the matchmaker picking/inviting, a
+        // friend's invitation notification, or a launch from a deep link.
+        // We surface it as a newMatches event so AppModel can attach.
+        if didBecomeActive {
+            newMatchesContinuation?.yield(match.matchID)
+        }
+
         guard let data = match.matchData, !data.isEmpty,
               let payload = try? MoveCodec.decode(data) else { return }
         // Last appended move OR pass is what the opponent just did.
@@ -184,12 +185,15 @@ public final class GameKitMatchService: NSObject, MatchService, GKLocalPlayerLis
     public enum MatchError: LocalizedError {
         case notAuthenticated
         case noMatch
+        case notSeeded
         public var errorDescription: String? {
             switch self {
             case .notAuthenticated:
                 return "Sign in to Game Center to play multiplayer."
             case .noMatch:
                 return "Couldn’t find or load a match. Try again."
+            case .notSeeded:
+                return "The match hasn’t been set up yet. Wait a moment and reopen it."
             }
         }
     }

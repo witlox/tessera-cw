@@ -6,19 +6,24 @@ import Foundation
 public final class StubMatchService: MatchService, @unchecked Sendable {
     public var isAuthenticated: Bool { false }
     public let inbound: AsyncStream<MatchEvent>
+    public let newMatches: AsyncStream<String>
     private let continuation: AsyncStream<MatchEvent>.Continuation
+    private let newMatchesContinuation: AsyncStream<String>.Continuation
 
     public init() {
         var cont: AsyncStream<MatchEvent>.Continuation!
         self.inbound = AsyncStream { cont = $0 }
+        var nm: AsyncStream<String>.Continuation!
+        self.newMatches = AsyncStream { nm = $0 }
         self.continuation = cont
+        self.newMatchesContinuation = nm
     }
 
     public func authenticate() async throws {
         throw Error.unavailable
     }
-    public func findMatch(languages: [Lang], difficulty: Generator.Difficulty,
-                          themeSlug: String?) async throws -> (MatchHandle, MatchPayload) {
+    public func attach(matchID: String,
+                       seedingIfEmpty: MatchConfig?) async throws -> (MatchHandle, MatchPayload) {
         throw Error.unavailable
     }
     public func payload(for match: MatchHandle) async throws -> MatchPayload {
