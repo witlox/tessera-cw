@@ -41,10 +41,12 @@ targets:
         CODE_SIGN_ENTITLEMENTS: App/Tessera/Resources/Tessera.entitlements
         CODE_SIGN_STYLE: Automatic
         SWIFT_VERSION: "5.9"
-        # Simulator builds: signing off so you can ⌘R without a team.
-        # Device / Archive: automatic signing — set DEVELOPMENT_TEAM in Xcode.
-        "CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]": NO
-        "CODE_SIGNING_REQUIRED[sdk=iphonesimulator*]": NO
+        # Simulator ad-hoc-signs with "-" identity; that's what applies the
+        # entitlement file at all. Don't disable CODE_SIGNING_ALLOWED here
+        # or GameKit reports "missing com.apple.developer.game-center" at
+        # runtime even though the entitlements file is right there.
+        # Device builds need a real team set via Xcode → Signing &
+        # Capabilities; leave DEVELOPMENT_TEAM blank so it isn't committed.
         DEVELOPMENT_TEAM: ""
 schemes:
   Tessera:

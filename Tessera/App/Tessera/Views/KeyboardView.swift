@@ -54,7 +54,8 @@ private struct IconKey: View {
         Button(action: action) {
             Image(systemName: systemImage)
                 .font(.system(size: 16, weight: .medium))
-                .frame(width: 48, minHeight: 44)
+                .frame(width: 48)
+                .frame(minHeight: 44)
                 .background(Color(.secondarySystemFill))
                 .clipShape(RoundedRectangle(cornerRadius: 6))
         }

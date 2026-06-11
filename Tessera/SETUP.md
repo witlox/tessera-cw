@@ -30,10 +30,14 @@ For device / Archive builds:
 3. Set **Team** to your Apple Developer team.
 4. Build for a connected device or Archive for TestFlight.
 
-Simulator builds need no signing (`project.yml` disables it for the
-`iphonesimulator` SDK). Device builds use automatic signing — leave
-`DEVELOPMENT_TEAM` blank in `project.yml` and set it once in Xcode so it
-isn't committed.
+Simulator builds ad-hoc-sign with the `-` identity (no team needed) — that
+auto-signing is what applies the Game Center entitlement to the bundle. If
+you ever see `gamed` reporting "missing `com.apple.developer.game-center`"
+at runtime on the simulator, code signing got disabled somewhere; re-enable
+it (`CODE_SIGNING_ALLOWED = YES`, which is the Xcode default).
+
+Leave `DEVELOPMENT_TEAM` blank in `project.yml` and set it once in Xcode
+so it isn't committed alongside the source.
 
 To run the library tests headless:
 
