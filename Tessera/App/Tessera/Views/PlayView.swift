@@ -41,7 +41,16 @@ struct PlayView: View {
                     Button("Reveal word") { solo.revealEntry() }
                     Button("Reveal puzzle", role: .destructive) { solo.revealAll() }
                     Divider()
-                    Toggle("Mark wrong cells", isOn: $solo.showErrors)
+                    // Button with state-aware label, not Toggle — Toggle inside
+                    // a Menu whose parent re-renders frequently (every keystroke
+                    // here) spams "updateVisibleMenuWithBlock while no context
+                    // menu is visible" warnings.
+                    Button {
+                        solo.showErrors.toggle()
+                    } label: {
+                        Label(solo.showErrors ? "Hide wrong cells" : "Mark wrong cells",
+                              systemImage: solo.showErrors ? "checkmark" : "exclamationmark.triangle")
+                    }
                 } label: {
                     Label("Reveal", systemImage: "eye")
                 }
