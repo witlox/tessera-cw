@@ -70,16 +70,15 @@ multiplayer feature inherits Apple's Game Center age requirements.
 
 ## Required-Reason API disclosures
 
-In line with Apple's Privacy Manifest requirements
-(`PrivacyInfo.xcprivacy` shipped inside the app bundle), Tessera declares
-the following Required-Reason API categories:
+Tessera ships a privacy manifest (`PrivacyInfo.xcprivacy`) inside its
+bundle. It declares **no Required-Reason API category usage**, because
+none of Tessera's code paths map to one of Apple's published categories:
+the app reads and writes its own JSON save file without accessing file
+timestamps, and the embedded SQLite (via GRDB) does not call any of the
+APIs Apple has placed under a Required-Reason rule.
 
-- **File Timestamp** — used by the system when the app saves and reads its
-  own in-progress solo game JSON file. (Apple reason code `C617.1`.)
-- **System Boot Time** — used internally by SQLite (via GRDB) for query
-  timing. (Apple reason code `35F9.1`.)
-
-No other privacy-relevant APIs are accessed.
+If a future feature ever introduces such an API call, this section and
+the manifest will be updated to declare it explicitly.
 
 ## Changes to this policy
 
