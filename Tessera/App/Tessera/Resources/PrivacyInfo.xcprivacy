@@ -1,42 +1,38 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Tessera privacy manifest.
+
+    Scope rule (the hard lesson): declare a Required-Reason API category
+    ONLY when a specific call in app or embedded-library code maps to that
+    category's stated intent. `plutil -lint` only checks plist syntax — it
+    does NOT validate that key names or reason codes are real. Cross-check
+    against:
+        Sentry — https://docs.sentry.io/platforms/apple/data-management/apple-privacy-manifest/
+        Apple DevForums thread 770148 (ITMS-91056 reference cases)
+    before adding anything to NSPrivacyAccessedAPITypes.
+
+    What Tessera does that COULD trigger Required-Reason APIs:
+      - FileManager.url(for: .applicationSupportDirectory, ...) for SoloStore
+        → does NOT access file timestamps (it creates / locates a directory).
+      - Data(contentsOf:) / data.write(to:options:[.atomic]) for SoloStore
+        → reads/writes bytes; does not surface timestamp metadata to us.
+      - GRDB / SQLite read of bundled tessera.sqlite
+        → no Required-Reason API category in Apple's published list maps to
+          SQLite query timing or pragma reads.
+    Net result: nothing in NSPrivacyAccessedAPITypes. If Apple's submission
+    validator flags a category we genuinely use, add it with the specific
+    triggering call cited in a comment — not on speculation.
+-->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <!-- No third-party tracking, no advertising identifiers, no analytics. -->
     <key>NSPrivacyTracking</key>
     <false/>
     <key>NSPrivacyTrackingDomains</key>
     <array/>
-
-    <!-- No user data leaves the device. The only network call is GameKit
-         matchmaking, whose data handling is Apple's. Solo state is a local
-         JSON file in Application Support. -->
     <key>NSPrivacyCollectedDataTypes</key>
     <array/>
-
-    <!-- Required-Reason APIs we actually touch. -->
     <key>NSPrivacyAccessedAPITypes</key>
-    <array>
-        <!-- FileManager / atomic JSON writes for SoloStore use file timestamps.
-             Category C617.01: inside-app file management. -->
-        <dict>
-            <key>NSPrivacyAccessedAPIType</key>
-            <string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
-            <key>NSPrivacyAccessedAPITypeReasons</key>
-            <array>
-                <string>C617.1</string>
-            </array>
-        </dict>
-        <!-- SQLite (GRDB) reads system clock for query timing / pragma
-             internals. Category 35F9.1: third-party SDK timekeeping internal use. -->
-        <dict>
-            <key>NSPrivacyAccessedAPIType</key>
-            <string>NSPrivacyAccessedAPICategorySystemBootTime</string>
-            <key>NSPrivacyAccessedAPITypeReasons</key>
-            <array>
-                <string>35F9.1</string>
-            </array>
-        </dict>
-    </array>
+    <array/>
 </dict>
 </plist>
