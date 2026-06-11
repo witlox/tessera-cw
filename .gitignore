@@ -74,3 +74,20 @@ playground.xcworkspace
 .vscode/
 *.swp
 *.swo
+
+# Local secrets / overrides (belt and braces — nothing here should ever
+# be committed; refs in pipeline/ read env vars at runtime).
+.env
+.env.*
+*.local
+secrets.json
+credentials.json
+*.pem
+*.p12
+
+# Python venvs (in case anyone runs the content pipeline from in-tree)
+.venv/
+venv/
+
+# Cache from the corpus rebuild script
+/tmp/tessera-*
