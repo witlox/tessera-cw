@@ -37,6 +37,21 @@ final class AppModel {
         let themeSlug: String?
     }
 
+    // MARK: - Leaderboard counters (persisted in UserDefaults)
+
+    /// Total puzzles solved across solo + multiplayer. Apple's leaderboard
+    /// replaces (doesn't accumulate) on submit, so we track the running
+    /// total locally and report the full value each time.
+    var puzzlesSolved: Int = UserDefaults.standard.integer(forKey: Self.kPuzzlesSolved) {
+        didSet { UserDefaults.standard.set(puzzlesSolved, forKey: Self.kPuzzlesSolved) }
+    }
+    var multiplayerWins: Int = UserDefaults.standard.integer(forKey: Self.kMultiplayerWins) {
+        didSet { UserDefaults.standard.set(multiplayerWins, forKey: Self.kMultiplayerWins) }
+    }
+
+    private static let kPuzzlesSolved   = "tessera.puzzlesSolved"
+    private static let kMultiplayerWins = "tessera.multiplayerWins"
+
     init() {
         #if canImport(GameKit)
         // GameKit works in the simulator with a Sandbox Game Center account
@@ -145,5 +160,30 @@ final class AppModel {
 
     func endMatch() {
         match = nil
+    }
+
+    // MARK: - Completion recording (fan out to leaderboards)
+
+    func recordSoloCompletion() {
+        puzzlesSolved += 1
+        let total = puzzlesSolved
+        Task { [match_service] in
+            try? await match_service.reportLeaderboard(score: total, to: .puzzlesSolved)
+        }
+    }
+
+    /// `didWin` is true on the client whose last move completed the puzzle.
+    /// Both clients increment `puzzlesSolved` (they both participated); only
+    /// the winner increments `multiplayerWins`.
+    func recordMultiplayerCompletion(didWin: Bool) {
+        puzzlesSolved += 1
+        if didWin { multiplayerWins += 1 }
+        let totals = (puzzlesSolved, multiplayerWins, didWin)
+        Task { [match_service] in
+            try? await match_service.reportLeaderboard(score: totals.0, to: .puzzlesSolved)
+            if totals.2 {
+                try? await match_service.reportLeaderboard(score: totals.1, to: .multiplayerWins)
+            }
+        }
     }
 }

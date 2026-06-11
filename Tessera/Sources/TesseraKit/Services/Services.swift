@@ -4,6 +4,22 @@ import Foundation
 // These protocols let TesseraKit (generator, game logic) stay UI- and
 // platform-agnostic and unit-testable.
 
+/// Stable IDs for the two leaderboards. These strings MUST match exactly
+/// the Leaderboard IDs you create under App Store Connect → Game Center →
+/// Leaderboards for your app. Changing them after launch resets the
+/// scores, so don't.
+public enum LeaderboardID: String, Sendable, CaseIterable, Codable {
+    case multiplayerWins  = "io.witlox.TesseraCrossword.multiplayerWins"
+    case puzzlesSolved    = "io.witlox.TesseraCrossword.puzzlesSolved"
+
+    public var displayName: String {
+        switch self {
+        case .multiplayerWins: return "Multiplayer wins"
+        case .puzzlesSolved:   return "Puzzles solved"
+        }
+    }
+}
+
 /// Picker constraint: at least one, at most three languages per board. The
 /// upper bound is a playability decision (mixing six Latin alphabets in one
 /// grid stops being fun) — nothing monetary about it.
@@ -57,6 +73,18 @@ public protocol MatchService {
     /// untouched correct cell deterministically. Both clients compute the
     /// same candidate set from the seed + move log, so they agree.
     func pass(revealing cell: CoordWire, in match: MatchHandle) async throws
+
+    /// End the turn-based match. Sets `matchOutcome` to .won on the
+    /// participant whose `gamePlayerID` matches `winnerPlayerID` and .lost
+    /// on everyone else, then writes final matchData and closes the match.
+    /// Called by `MatchViewModel` when the winning move just completed the
+    /// puzzle. The other client will see `.matchEnded` via inbound.
+    func endMatch(handle: MatchHandle, winnerPlayerID: String) async throws
+
+    /// Post a score to a Game Center leaderboard. Best-effort — if the
+    /// local player isn't authenticated, the call is silently dropped (we
+    /// don't want a missing GC sign-in to fail solo completions).
+    func reportLeaderboard(score: Int, to id: LeaderboardID) async throws
 
     /// Inbound match events (opponent moves, timeouts, completion).
     var inbound: AsyncStream<MatchEvent> { get }

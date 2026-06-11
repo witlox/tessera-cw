@@ -5,6 +5,7 @@ struct HomeView: View {
     @Environment(AppModel.self) private var model
     @State private var showingNew = false
     @State private var showingMultiplayer = false
+    @State private var showingLeaderboards = false
     @State private var confirmDiscardSolo = false
 
     var body: some View {
@@ -47,6 +48,28 @@ struct HomeView: View {
                     Label("Multiplayer", systemImage: "person.2")
                 }
                 .disabled(model.corpus == nil)
+
+                Button {
+                    showingLeaderboards = true
+                } label: {
+                    Label("Leaderboards", systemImage: "trophy")
+                }
+                .disabled(!model.match_service.isAuthenticated)
+            }
+
+            Section("Your stats") {
+                HStack {
+                    Label("Puzzles solved", systemImage: "checkmark.seal")
+                    Spacer()
+                    Text("\(model.puzzlesSolved)")
+                        .monospacedDigit().foregroundStyle(.secondary)
+                }
+                HStack {
+                    Label("Multiplayer wins", systemImage: "trophy")
+                    Spacer()
+                    Text("\(model.multiplayerWins)")
+                        .monospacedDigit().foregroundStyle(.secondary)
+                }
             }
 
             if let err = model.corpusError {
@@ -63,6 +86,12 @@ struct HomeView: View {
         .sheet(isPresented: $showingMultiplayer) {
             MultiplayerView()
         }
+        #if canImport(GameKit) && canImport(UIKit)
+        .sheet(isPresented: $showingLeaderboards) {
+            LeaderboardsSheet(onDismiss: { showingLeaderboards = false })
+                .ignoresSafeArea()
+        }
+        #endif
         .alert("Discard solo game?", isPresented: $confirmDiscardSolo) {
             Button("Discard", role: .destructive) { model.endSolo() }
             Button("Cancel", role: .cancel) {}

@@ -58,9 +58,18 @@ works. Solo play does not need any of this.
 2. **Certificates, Identifiers & Profiles → Identifiers**:
    - Open the app ID, enable **Game Center** capability, save.
 3. **App Store Connect → Game Center**:
-   - Enable Game Center for the app. Achievements/leaderboards optional.
-   - There are no leaderboards or achievements in v1; you can leave both
-     blank.
+   - Enable Game Center for the app.
+   - Register the two leaderboards Tessera reports to. IDs must match the
+     `LeaderboardID` enum in `Sources/TesseraKit/Services/Services.swift`:
+
+     | Reference name      | Leaderboard ID                              | Format  | Sort order |
+     |---------------------|----------------------------------------------|---------|------------|
+     | Puzzles solved      | `io.witlox.TesseraCrossword.puzzlesSolved`  | Integer | High → low |
+     | Multiplayer wins    | `io.witlox.TesseraCrossword.multiplayerWins`| Integer | High → low |
+
+     For both: score type "Integer", score format suffix singular = "puzzle"
+     / "win" and plural = "puzzles" / "wins". No achievements registered;
+     the achievements tab can stay empty.
 4. **In Xcode**:
    - Signing & Capabilities → make sure "Game Center" is listed (it should
      be, via `App/Tessera/Resources/Tessera.entitlements`).

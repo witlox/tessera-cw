@@ -15,6 +15,10 @@ final class MatchViewModel {
     /// Set when GameKit fires `.matchEnded` (opponent quit, timeout, etc.).
     /// The view shows a completion alert and routes back to Home.
     var didEnd: Bool = false
+    /// True on the local client whose move completed the puzzle. The view
+    /// uses it to attribute "you won" vs "opponent solved it" and to drive
+    /// the multiplayer-wins leaderboard increment.
+    var didWin: Bool = false
 
     private let service: MatchService
 
@@ -42,6 +46,11 @@ final class MatchViewModel {
         try await service.submit(move, in: handle)
         // Local optimistic apply; opponent receives via GKLocalPlayerListener.
         state.place(letter, at: coord, in: puzzle)
+        // If that letter solved the puzzle, we win and end the match.
+        if state.isComplete(puzzle), !me.isEmpty {
+            didWin = true
+            try? await service.endMatch(handle: handle, winnerPlayerID: me)
+        }
     }
 
     /// Pick a deterministic untouched cell and pass. Seed is the match seed

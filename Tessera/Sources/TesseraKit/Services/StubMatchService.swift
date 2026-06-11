@@ -35,6 +35,12 @@ public final class StubMatchService: MatchService, @unchecked Sendable {
     public func pass(revealing cell: CoordWire, in match: MatchHandle) async throws {
         throw Error.unavailable
     }
+    public func endMatch(handle: MatchHandle, winnerPlayerID: String) async throws {
+        throw Error.unavailable
+    }
+    public func reportLeaderboard(score: Int, to id: LeaderboardID) async throws {
+        // Silently ignore — caller treats leaderboard posts as best-effort.
+    }
 
     public enum Error: LocalizedError {
         case unavailable

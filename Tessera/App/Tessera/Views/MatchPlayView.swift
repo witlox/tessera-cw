@@ -78,15 +78,23 @@ struct MatchPlayView: View {
         .onChange(of: match.didEnd) { _, ended in
             if ended { showCompletion = true }
         }
-        .alert("Match complete", isPresented: $showCompletion) {
+        .alert(match.didWin ? "You won" : "Match complete",
+               isPresented: $showCompletion) {
             Button("Done") {
+                // Only counts as participation if the puzzle was actually
+                // solved — quits/timeouts shouldn't credit either player.
+                if match.state.isComplete(match.puzzle) {
+                    model.recordMultiplayerCompletion(didWin: match.didWin)
+                }
                 model.endMatch()
                 dismiss()
             }
         } message: {
-            Text(match.didEnd && !match.state.isComplete(match.puzzle)
-                 ? "The other player left or the match timed out."
-                 : "Puzzle solved.")
+            if match.state.isComplete(match.puzzle) {
+                Text(match.didWin ? "Your move solved the puzzle." : "Your opponent solved it first.")
+            } else {
+                Text("The other player left or the match timed out.")
+            }
         }
     }
 

@@ -100,6 +100,27 @@ public final class GameKitMatchService: NSObject, MatchService, GKLocalPlayerLis
         try await save(matchData: data, in: match, endTurn: true)
     }
 
+    public func endMatch(handle: MatchHandle, winnerPlayerID: String) async throws {
+        let match = try await load(matchID: handle.id)
+        for participant in match.participants {
+            guard let pid = participant.player?.gamePlayerID else { continue }
+            participant.matchOutcome = (pid == winnerPlayerID) ? .won : .lost
+        }
+        let data = match.matchData ?? Data()
+        try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
+            match.endMatchInTurn(withMatch: data) { error in
+                if let error { c.resume(throwing: error) } else { c.resume() }
+            }
+        }
+    }
+
+    public func reportLeaderboard(score: Int, to id: LeaderboardID) async throws {
+        guard GKLocalPlayer.local.isAuthenticated else { return }
+        try await GKLeaderboard.submitScore(score, context: 0,
+                                            player: GKLocalPlayer.local,
+                                            leaderboardIDs: [id.rawValue])
+    }
+
     public func pass(revealing cell: CoordWire, in handle: MatchHandle) async throws {
         let match = try await load(matchID: handle.id)
         let payload = try MoveCodec.decode(match.matchData ?? Data())

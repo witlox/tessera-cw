@@ -47,7 +47,11 @@ struct PlayView: View {
             if solo.isComplete { showCompletion = true }
         }
         .alert("Puzzle complete", isPresented: $showCompletion) {
-            Button("Done") { model.endSolo(); dismiss() }
+            Button("Done") {
+                model.recordSoloCompletion()
+                model.endSolo()
+                dismiss()
+            }
         } message: {
             Text(completionMessage)
         }
