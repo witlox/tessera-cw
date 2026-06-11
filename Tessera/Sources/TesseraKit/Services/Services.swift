@@ -1,27 +1,20 @@
 import Foundation
 
-// Service SEAMS only. Concrete StoreKit / GameKit conformances belong in the
-// app target and should be built live against Xcode — not stubbed blindly here.
+// Service SEAMS only. Concrete GameKit conformances live in `Services/GameKitMatchService.swift`.
 // These protocols let TesseraKit (generator, game logic) stay UI- and
 // platform-agnostic and unit-testable.
 
-/// Pro unlock (StoreKit 2, £1.99 one-time). Free tier = English only;
-/// Pro = up to 3 of the 6 languages mixed in one grid.
-public protocol EntitlementStore {
-    var isProUnlocked: Bool { get }
-    func purchasePro() async throws
-    func restore() async throws
-}
-
-/// Language selection gated by entitlement. Centralises the free/Pro rule so it
-/// isn't re-implemented per surface.
-public struct LanguagePolicy {
-    public let entitlements: EntitlementStore
-    public init(_ e: EntitlementStore) { entitlements = e }
-
-    public func allowed(_ requested: [Lang]) -> [Lang] {
-        if entitlements.isProUnlocked { return Array(requested.prefix(3)) }
-        return [.en]                                   // free tier: English only
+/// Picker constraint: at least one, at most three languages per board. The
+/// upper bound is a playability decision (mixing six Latin alphabets in one
+/// grid stops being fun) — nothing monetary about it.
+public struct LanguageMix: Sendable, Equatable {
+    public static let maxLanguages = 3
+    public let languages: [Lang]
+    public init?(_ requested: [Lang]) {
+        let unique = NSOrderedSet(array: requested.map(\.rawValue))
+            .array.compactMap { Lang(rawValue: $0 as! String) }
+        guard !unique.isEmpty else { return nil }
+        self.languages = Array(unique.prefix(Self.maxLanguages))
     }
 }
 
@@ -31,26 +24,100 @@ public struct LanguagePolicy {
 /// generate the IDENTICAL board locally via `Generator(seed:)`. Only moves and
 /// the shot-clock travel over the wire — never the solution.
 public protocol MatchService {
-    func startMatch(languages: [Lang]) async throws -> MatchHandle
+    /// True once GKLocalPlayer has authenticated. The home screen uses this to
+    /// gate the "Multiplayer" entry point.
+    var isAuthenticated: Bool { get }
+
+    /// Drives Game Center sign-in if needed. No-op on subsequent calls.
+    func authenticate() async throws
+
+    /// Find / create a turn-based match. Returns the handle plus the initial
+    /// payload (matters on first turn: the seed and player order are set
+    /// here, and the local view needs them to render before the next
+    /// inbound event arrives).
+    func findMatch(languages: [Lang], difficulty: Generator.Difficulty,
+                   themeSlug: String?) async throws -> (MatchHandle, MatchPayload)
+
+    /// Reloads the authoritative payload from the backing store. Called
+    /// after every inbound event to absorb the opponent's last move.
+    func payload(for match: MatchHandle) async throws -> MatchPayload
+
+    /// Submit one filled cell, then advance the turn to the opponent.
     func submit(_ move: Move, in match: MatchHandle) async throws
-    func endTurn(in match: MatchHandle) async throws
+
+    /// Voluntarily pass without filling. Caller picks the cell to reveal —
+    /// it has the local Puzzle and the current GameState, so it can pick an
+    /// untouched correct cell deterministically. Both clients compute the
+    /// same candidate set from the seed + move log, so they agree.
+    func pass(revealing cell: CoordWire, in match: MatchHandle) async throws
+
+    /// Inbound match events (opponent moves, timeouts, completion).
     var inbound: AsyncStream<MatchEvent> { get }
 }
 
-public struct MatchHandle: Sendable, Hashable { public let id: String; public let seed: UInt64 }
+/// Per-match configuration captured at start so both clients can reproduce
+/// the identical board from `seed`.
+public struct MatchConfig: Sendable, Codable, Hashable {
+    public let seed: UInt64
+    public let languages: [Lang]
+    public let difficulty: Generator.Difficulty
+    public let themeSlug: String?
+    public init(seed: UInt64, languages: [Lang],
+                difficulty: Generator.Difficulty, themeSlug: String?) {
+        self.seed = seed; self.languages = languages
+        self.difficulty = difficulty; self.themeSlug = themeSlug
+    }
+}
 
-public struct Move: Sendable, Codable {
+public struct MatchHandle: Sendable, Hashable {
+    public let id: String
+    public let config: MatchConfig
+    public init(id: String, config: MatchConfig) { self.id = id; self.config = config }
+}
+
+public struct Move: Sendable, Codable, Hashable {
     public let cell: CoordWire
     public let letter: Character
-    public let atTurnDeadline: Date     // server-trusted shot-clock boundary
+    /// Server-trusted shot-clock boundary (when the placing player's turn ends).
+    public let atTurnDeadline: Date
+    public init(cell: CoordWire, letter: Character, atTurnDeadline: Date) {
+        self.cell = cell; self.letter = letter; self.atTurnDeadline = atTurnDeadline
+    }
+
+    private enum CodingKeys: String, CodingKey { case cell, letter, atTurnDeadline }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(cell, forKey: .cell)
+        try c.encode(String(letter), forKey: .letter)
+        try c.encode(atTurnDeadline, forKey: .atTurnDeadline)
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        cell = try c.decode(CoordWire.self, forKey: .cell)
+        let s = try c.decode(String.self, forKey: .letter)
+        guard let ch = s.first else {
+            throw DecodingError.dataCorruptedError(forKey: .letter, in: c,
+                debugDescription: "empty letter")
+        }
+        letter = ch
+        atTurnDeadline = try c.decode(Date.self, forKey: .atTurnDeadline)
+    }
 }
 
 public enum MatchEvent: Sendable {
     case opponentMove(Move)
-    case opponentPassed                 // triggers reveal-on-pass
+    case opponentPassed(revealedCell: CoordWire)
     case turnTimedOut
     case matchEnded(winner: String?)
 }
 
 /// Codable mirror of Coord for the wire (Coord stays a value type internal).
-public struct CoordWire: Sendable, Codable, Hashable { public let r: Int; public let c: Int }
+public struct CoordWire: Sendable, Codable, Hashable {
+    public let r: Int
+    public let c: Int
+    public init(_ r: Int, _ c: Int) { self.r = r; self.c = c }
+    public init(_ coord: Coord) { self.r = coord.r; self.c = coord.c }
+    public var coord: Coord { Coord(r, c) }
+}

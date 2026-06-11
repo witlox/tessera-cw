@@ -1,30 +1,64 @@
-# Tessera — backbone
+# Tessera — architecture
 
-Swift package `TesseraKit`: corpus → generator → game logic, with platform
-services behind protocols. Compiles in Xcode/SwiftPM (GRDB dependency); it is
-**not** built in the content sandbox.
+Two layers in this directory:
 
-## Module map
-- `Model/`      core value types; `GridForm.fold` mirrors the Python `grid_form()` — keep folding rules in sync with `content/tessera_content.py`.
-- `Corpus/`     `CorpusStore` protocol + GRDB reader over the bundled read-only `tessera.sqlite`. Clued-pool query mirrors the validated `engine/generate.py:load_pool`.
-- `Generator/`  faithful port of the validated free-form interlocking generator + `incidentalWords` verifier. Seeded RNG → reproducible boards.
-- `Services/`   seams only: `EntitlementStore` (StoreKit), `MatchService` (Game Center turn-based). Concrete conformances live in the app target, built live in Xcode.
+1. **TesseraKit** — Swift package, pure model / corpus / generator / game.
+   Compiles with `swift build`; tests run with `swift test`. Has GRDB as its
+   only external dependency.
+2. **Tessera (app)** — SwiftUI iOS app target. Built by `xcodegen` from
+   `project.yml`, depends on TesseraKit via local SwiftPM. Universal
+   iPhone + iPad.
 
-## What the prototype PROVED (engine/generate.py, 80 grids)
-- Clued-words-only assembly is reliable: 28/28 words, 15×15, ~0.1s, every seed.
-- Correct: 0 incidental words — every maximal run is an intentional clued entry.
-- Mixed-language interlocking works on `grid_form` (the Pro feature is viable).
+## TesseraKit modules
 
-## Open design questions the proof surfaced (decide before/with the build)
-1. **Density model.** Output is free-form (0.39–0.46; some letters in one word
-   only). American-style every-cell-checked grids need a stricter skeleton-first
-   generator. Casual clued play probably doesn't — confirm before investing.
-2. **Language balance.** Mixed grids skew to the largest pool / seed language.
-   Pro "mix up to 3" needs a balancing knob (per-language quota, or weight
-   candidate pick inversely to pool size). Not load-bearing; cosmetic-ish.
-3. **Layout aesthetics.** Free-form interlock != pretty symmetric grid. If a
-   particular look is wanted, that's separate work on top of the proven fill.
+```
+Model/        Lang, Coord, Orientation, GridForm.fold, Entry, PlacedEntry, Puzzle
+Corpus/       CorpusStore protocol + SQLiteCorpusStore (GRDB reader over the
+              bundled, read-only tessera.sqlite). Theme support, pool sizing.
+Generator/    Free-form interlocking placement, greedy maximise-crossings with
+              random restarts, deterministic via SeededRNG (xorshift), pool-
+              size-aware target. Generator.incidentalWords() proves every
+              maximal run is a placed entry.
+Game/         GameState (fills, reveals, completion), MoveCodec (MatchPayload
+              wire format for GKTurnBasedMatch.matchData), ShotClock (60s
+              per-turn countdown).
+Services/     MatchService protocol + LanguageMix picker constraint.
+              GameKitMatchService (real Game Center conformance).
+              StubMatchService (used when GameKit is unavailable / in tests).
+```
 
-## Not built here (do in Xcode + Claude Code)
-SwiftUI board/keyboard/clue UI; GameState (fills, reveal-on-pass, shot clock);
-StoreKit2 + GameKit conformances; app icon. Seams above are the contracts.
+## Cross-implementation invariants
+
+- **GridForm folding** must match between Swift (`Model.swift:GridForm.fold`)
+  and Python (`content/tessera_content.py:grid_form`). The Swift parity test
+  covers the awkward cases — ß, ł, ø, þ, æ, œ, ñ, plus the accented vowels
+  that decompose under NFKD. If you add a new ligature, add it to both.
+- **Seeded generation** is the fair-multiplayer contract: both clients
+  receive the same `MatchConfig.seed`, build the same pool from their local
+  corpus, and run `Generator.generate(seed:)` — they MUST produce the
+  identical Puzzle. `GeneratorTests.testDeterministicSeed` enforces this.
+  Anything new in the generator must not introduce non-deterministic state
+  (no `Dictionary` iteration without a sort, no `Date.now`).
+
+## Generator properties (measured)
+
+- 0 incidental words across 10+ seeds × the small synthetic pool used in
+  tests. The same property holds on the real bundled corpus.
+- Adaptive target: `min(opt.targetWords, floor(pool × 0.7))`, never below 4.
+  A pool of 6 (cooking × it) yields a 4-entry mini-puzzle; a pool of 1,500+
+  (unthemed full corpus) hits the requested 28.
+- Free-form interlock density on the bundled corpus is ~0.39–0.46. Not
+  symmetric / not American-style every-cell-checked. Casual clued play
+  doesn't require that aesthetic.
+
+## App seams
+
+The view layer talks to TesseraKit through three @Observable models:
+- `AppModel` — corpus handle, themes, current solo / current match.
+- `SoloViewModel` — owns one in-progress Puzzle and its GameState.
+- `MatchViewModel` — wraps a `MatchHandle` + decoded payload; replays moves
+  to derive `GameState` so receivers can drop straight into the right view.
+
+Matchmaking is programmatic (`GKTurnBasedMatch.find(for:)`) so we don't ship
+UIKit out of TesseraKit. The SwiftUI `MultiplayerView` calls the service
+and routes the resolved handle into `AppModel.match`.

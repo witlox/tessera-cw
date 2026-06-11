@@ -7,13 +7,27 @@ import Foundation
 ///
 /// Greedy placement maximising crossings, with random restarts; keeps the best.
 public struct Generator {
-    public struct Options {
+    public struct Options: Sendable {
         public var targetWords = 28
         public var maxDim = 15
         public var restarts = 200
         public var minLen = 3
         public var maxLen = 11
         public init() {}
+    }
+
+    /// Difficulty bucket the corpus exposes (mirrors the `difficulty` column).
+    public enum Difficulty: String, Sendable, CaseIterable, Codable {
+        case easy, medium, hard
+        /// Difficulty tiers the picker offers. `easy` permits {easy};
+        /// `medium` permits {easy, medium}; `hard` permits all.
+        public var allowed: Set<String> {
+            switch self {
+            case .easy:   return ["easy"]
+            case .medium: return ["easy", "medium"]
+            case .hard:   return ["easy", "medium", "hard"]
+            }
+        }
     }
 
     private let pool: [Entry]
@@ -28,6 +42,17 @@ public struct Generator {
             }
         }
         self.byLetter = idx
+    }
+
+    /// Sensible default target given pool size. Themed mini-puzzles are
+    /// expected (cooking × it has only 6 clued words); the player should
+    /// always get *some* board rather than a failed-generation error.
+    public static func adaptiveTarget(poolSize: Int, requested: Int = 28) -> Int {
+        // Aim for ~70% of pool so the generator has slack to crossing-pick;
+        // never below 4 (a 4-entry board is the smallest playable) and never
+        // above the requested ceiling.
+        let want = min(requested, Int(Double(poolSize) * 0.7))
+        return max(4, want)
     }
 
     // MARK: - Mutable working grid
@@ -46,7 +71,6 @@ public struct Generator {
             let (dr, dc) = o == .across ? (0, 1) : (1, 0)
             let (pdr, pdc) = o == .across ? (1, 0) : (0, 1)
             let n = gf.count
-            // ends must be clear
             if letter(origin.r - dr, origin.c - dc) != nil { return nil }
             if letter(origin.r + dr * n, origin.c + dc * n) != nil { return nil }
             var crossings = 0
@@ -61,7 +85,6 @@ public struct Generator {
                 }
             }
             if !cells.isEmpty && crossings == 0 { return nil }
-            // bounding-box guard
             var rs = [origin.r, origin.r + dr * (n - 1)]
             var cs = [origin.c, origin.c + dc * (n - 1)]
             for k in cells.keys { rs.append(k.r); cs.append(k.c) }
@@ -82,18 +105,19 @@ public struct Generator {
 
     public func generate(_ opt: Options = Options(), seed: UInt64? = nil) -> Puzzle {
         var rng = SeededRNG(seed ?? UInt64.random(in: 0...UInt64.max))
+        let target = Generator.adaptiveTarget(poolSize: pool.count, requested: opt.targetWords)
         var best: Board?
         for _ in 0..<opt.restarts {
-            let b = buildOne(opt, &rng)
+            let b = buildOne(opt, target: target, &rng)
             if best == nil || b.placed.count > best!.placed.count { best = b }
-            if (best?.placed.count ?? 0) >= opt.targetWords { break }
+            if (best?.placed.count ?? 0) >= target { break }
         }
         let board = best ?? Board()
         return Puzzle(placed: board.placed, solution: board.cells,
                       languages: Array(Set(board.placed.map(\.entry.language))))
     }
 
-    private func buildOne(_ opt: Options, _ rng: inout SeededRNG) -> Board {
+    private func buildOne(_ opt: Options, target: Int, _ rng: inout SeededRNG) -> Board {
         var b = Board()
         let seeds = pool.filter { (5...7).contains($0.length) }
         guard let seed = (seeds.isEmpty ? pool : seeds).randomElement(using: &rng) else { return b }
@@ -101,8 +125,14 @@ public struct Generator {
 
         var stalls = 0
         let attemptsPerStep = 400
-        while b.placed.count < opt.targetWords && stalls < 60 {
-            var anchors = Array(b.cells)
+        while b.placed.count < target && stalls < 60 {
+            // Sort before shuffling — Dictionary iteration order is not stable
+            // across the program lifetime (or even sometimes within), so
+            // Array(b.cells) would inject hash-seed entropy and break the
+            // seed → puzzle contract that fair multiplayer depends on.
+            var anchors = b.cells.sorted { a, b in
+                a.key.r == b.key.r ? a.key.c < b.key.c : a.key.r < b.key.r
+            }
             anchors.shuffle(using: &rng)
             var best: (Int, Entry, Coord, Orientation)?
             var tried = 0
@@ -142,12 +172,11 @@ public struct Generator {
                 while b <= inner.upperBound {
                     let here = horizontal ? cells[Coord(a, b)] : cells[Coord(b, a)]
                     if here == nil { b += 1; continue }
-                    let start = b; var run = ""
+                    var run = ""
                     while b <= inner.upperBound,
                           let ch = horizontal ? cells[Coord(a, b)] : cells[Coord(b, a)] {
                         run.append(ch); b += 1
                     }
-                    _ = start
                     if run.count >= 2 && !placedGF.contains(run) { bad.append(run) }
                 }
             }

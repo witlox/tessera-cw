@@ -19,10 +19,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DB = os.path.join(HERE, "tessera.sqlite")
 SCHEMA = os.path.join(HERE, "schema.sql")
 
-# Latin-script European targets that wordfreq actually covers (probed earlier).
-TARGET_LANGS = ["en","nl","de","fr","es","it","sv","da","nb","fi","is",
-                "pl","cs","sk","hu","ro","sl","lv","lt"]
-# Documented gaps (no wordfreq data): hr (Croatian), et (Estonian) -> pipeline-only.
+# Shipping set: only the 6 languages with hand-authored clue coverage. The
+# 13 word-only languages were dropped — they shipped ~50k unused rows since
+# the generator filters to clued words. Slimmer DB = smaller app bundle.
+TARGET_LANGS = ["en", "nl", "de", "fr", "es", "it"]
 
 CANDIDATES_PER_LANG = 4000   # pull this many, then filter
 _LETTERS = re.compile(r"^[^\W\d_]+$", re.UNICODE)
@@ -167,13 +167,11 @@ def write_meta(con, inv_counts, seed_stats):
     cur.execute("SELECT COUNT(*) FROM words"); total_words = cur.fetchone()[0]
     cur.execute("SELECT COUNT(*) FROM clues"); total_clues = cur.fetchone()[0]
     meta = {
-        "schema_version": "1",
+        "schema_version": "2",
         "grid_alphabet": "A-Z",
         "languages": ",".join(l for l, c in inv_counts.items() if c),
-        "languages_missing_in_wordfreq": "hr,et",
         "total_words": str(total_words),
         "total_clues": str(total_clues),
-        "free_tier_language": "en",
     }
     for k, v in meta.items():
         cur.execute("INSERT OR REPLACE INTO meta(key,value) VALUES (?,?)", (k, v))
@@ -194,8 +192,6 @@ def main():
     print("\n=== WORD INVENTORY (real, per language) ===")
     for lang in TARGET_LANGS:
         print(f"  {lang:3} {inv.get(lang,0):>6} words")
-    print("  hr      0 words  (no wordfreq data -> pipeline only)")
-    print("  et      0 words  (no wordfreq data -> pipeline only)")
 
     print("\n=== ENGLISH SEED (validated clues) ===")
     print(f"  themes           : {seed['groups']}")

@@ -1,122 +1,157 @@
-# Tessera — content layer
+# Tessera
 
-*(working name; rename freely)*
+A multilingual clued crossword game for iPhone and iPad. Mixed Latin-script
+grids, asynchronous Game Center multiplayer with a 60-second shot clock and
+reveal-on-pass, system-native SwiftUI shell. Free, no in-app purchases, no
+ads, no tracking.
 
-A multilingual **clued crossword**: mixed Latin-script grids, A–Z crossing letters,
-per-turn shot clock, reveal-on-pass, async multiplayer. **Free tier = English only.**
-**Pro (£1.99) = up to 3 of ~19 Latin-script European languages, mixed grids.**
+Six clued languages: English, Dutch, German, French, Spanish, Italian. Mix
+up to three in a single grid; crossings match on the A–Z grid form so
+*Straße* / *house* / *casa* interlock cleanly without losing display
+diacritics.
 
-This package is the **content layer only** — the data format plus the generation/validation
-pipeline. The Swift app (engine, UI, Game Center, StoreKit) is the next step.
-
----
-
-## The honest boundary (read this first)
-
-You asked to "generate word lists and hints for all languages." Here is exactly what is
-real versus what is scaffolded, because the distinction is the whole ballgame:
-
-| Dimension | Status | Source |
-|-----------|--------|--------|
-| **Words** (19 languages) | **Real** | `wordfreq` frequency data, folded to A–Z |
-| **Hand-authored clues** | **Real, validated** | 42 themes × 6 languages, ~6 words/theme seeded, every clue passed the harness |
-| **Deeper clues (toward each theme's cap)** | **Pipeline** | run `pipeline/generate_clues.py` on your endpoint |
-| **Non-English theme membership** | **Not generated here** | upstream step — see below |
-
-Hand-fabricating ~180k clues across ~18 languages (most low-resource) in one pass would
-have produced exactly the unvalidated slop we agreed to avoid. The clue *validator* is the
-real IP; the generator is commodity. So the validator is built and proven; generation is
-wired to your own inference stack.
+This repo holds:
+- the **content pipeline** (Python) that generates and validates the bundled
+  word/clue corpus,
+- **TesseraKit** (Swift package): folding rules, corpus reader, grid
+  generator, game state, Move codec, Game Center match service,
+- the **iOS app** target (SwiftUI), wired up via `xcodegen`.
 
 ---
 
-## Why SQLite ("native Xcode format")
+## Layout
 
-One bundled, read-only `tessera.sqlite` ships in the app. Rationale over the alternatives:
+```
+content/        Python content pipeline (corpus build + validator)
+  tessera_content.py   GridForm folding, concat policy, clue validator (the IP)
+  build_content.py     Assembles tessera.sqlite from wordfreq + seeds
+  english_seed.py      Hand-authored English clue seed (42 themes)
+  seeds_multi.py       Hand-authored multilingual clues (nl/de/fr/es/it × themes)
+  schema.sql           Read-only SQLite schema
+  tessera.sqlite       Built artifact (3.3 MB; 25,158 words, 3,116 validated clues)
 
-- **JSON/plist** — no indexed query; loading 70k+ rows to filter by language/theme/difficulty
-  is wasteful on device.
-- **Prebuilt Core Data store** — version-brittle to ship; the model hash must match the binary.
-- **SQLite** — indexed `(language, grid_len)` and `(language, difficulty)` lookups are exactly
-  what the grid generator needs at runtime. Wrap it with **GRDB** (recommended) or point a
-  Core Data store at it. Read-only, so concurrency is trivial.
+engine/         Python prototype generator (proof-of-assembly; kept for reference)
+pipeline/       LLM-driven clue generation against an OpenAI-compatible endpoint
+                + a standalone harness auditor for clue regressions
 
-Built artifact: `content/tessera.sqlite` — **74,188 words (19 languages), 1,641 hand-authored validated clues across 6 languages (en + nl/de/fr/es/it), 42 themes, ~8.5 MB.**
-
----
-
-## Schema (`content/schema.sql`)
-
-- `words(language, surface, grid_form, grid_len, zipf, difficulty, is_concat)` — `surface` keeps
-  diacritics ("Straße"); `grid_form` is the A–Z crossing key ("STRASSE").
-- `groups(slug, label_en)` — themes.
-- `word_groups` — many-to-many (a word can sit in several themes).
-- `clues(word_id, language, text, source, validated)` — clue language == word language; in a
-  mixed grid the clue's language tells the solver which language the answer is in.
-
-## gridForm normalization (`content/tessera_content.py`)
-
-Explicit map for non-decomposable glyphs, then NFKD + strip marks, then keep A–Z:
-
-| Glyph | → | | Glyph | → |
-|---|---|---|---|---|
-| ß | SS | | ø | O |
-| ł | L  | | đ/ð | D |
-| þ | TH | | æ | AE |
-| œ | OE | | é,ü,ñ,… | E,U,N,… |
-
-**Documented behaviour:** ñ folds to N, so *año*/*ano* share the gridform ANO. The
-`surface` ("año") is preserved and displayed correctly; only the crossing key is folded.
-`BLOCKLIST_SURFACES` blocks the offensive *surface* "ano" while leaving the innocent "año"
-playable — a gridform block would wrongly kill both.
-
-## Per-language concatenation (locked decision)
-
-Germanic + Finno-Ugric compound natively (allow long concatenated entries); Romance uses
-particles (concatenation reads unnatural → disallowed). Encoded in `CONCAT_POLICY` with a
-per-language `max_grid_len`. Not a global rule.
+Tessera/                  Swift app + library
+  Package.swift           TesseraKit library (corpus, generator, game, services)
+  Sources/TesseraKit/     library implementation
+  Tests/TesseraKitTests/  XCTest (folding parity, generator determinism, codec, ...)
+  App/Tessera/            iOS app target (SwiftUI)
+  project.yml             xcodegen spec for the iOS app target
+  SETUP.md                Apple Developer / Game Center / build steps
+```
 
 ---
 
-## Run
+## Corpus
+
+| Language | Clued words | Themes covered |
+|----------|------------:|---------------:|
+| en | 597 | 42 / 42 |
+| nl | 503 | 42 / 42 |
+| de | 504 | 42 / 42 |
+| fr | 504 | 42 / 42 |
+| es | 504 | 42 / 42 |
+| it | 504 | 42 / 42 |
+| **total** | **3,116** | **42** |
+
+`words` covers 25,158 entries across the 6 languages from `wordfreq` filtered
+through the A–Z fold; `clues` joins to a subset of those words with validator-
+approved clues (`source ∈ {seed, llm}`, `validated = 1`).
+
+The theme depth ranges from 6 clued words (cooking × it) at the floor to 21
+(en × cinema) at the ceiling, median 12–14. The picker shows the effective
+pool size up front; the generator scales its target word count to `min(28,
+floor(pool × 0.7))` so small themed pools degrade to mini-puzzles instead of
+failing.
+
+### `grid_form` (the A–Z crossing key)
+
+Display surfaces keep diacritics (`Straße`, `año`, `Þór`); the crossing key
+is `STRASSE`, `ANO`, `THOR`. Folding is canonicalised in
+`content/tessera_content.py:grid_form` and mirrored exactly in
+`Tessera/Sources/TesseraKit/Model/Model.swift:GridForm.fold`. The Swift port
+has XCTest parity vectors so the two implementations can't drift silently.
+
+Documented casualty: Spanish ñ folds to N, so *año*/*ano* share the gridform
+ANO. `BLOCKLIST_SURFACES` blocks the offensive surface "ano" while leaving
+"año" playable — a gridform block would wrongly kill both.
+
+---
+
+## Game design (locked)
+
+- **Clued crossword.** Free-form interlocking placement, every maximal run
+  is an intentional clued entry (verified by `Generator.incidentalWords()`).
+- **Mixed Latin-script grids.** Up to 3 of the 6 languages, chosen at puzzle
+  setup. Crossings work on the gridform.
+- **On-demand puzzles.** Player picks languages + difficulty + (optional)
+  theme; tap "Start"; new grid.
+- **Free, no IAP, no ads.** The original Pro tier and StoreKit machinery
+  have been removed.
+- **Async multiplayer.** Game Center turn-based match; the seed is shipped,
+  both clients generate the identical board locally. Only moves and pass-
+  reveals travel over the wire.
+- **60-second shot clock once you engage.** Per turn. Voluntary or timed-out
+  passes trigger reveal-on-pass: one untouched correct cell becomes visible
+  to both players (chosen deterministically from the match seed).
+- **Solo reveal menu.** Reveal letter / reveal word / reveal puzzle.
+
+---
+
+## Build
+
+### Content pipeline (Python)
 
 ```bash
 cd content
-python3 build_content.py          # rebuild tessera.sqlite (prints counts, no list dumps)
+python3 build_content.py        # rebuilds tessera.sqlite from wordfreq + seeds
 
 cd ../pipeline
-python3 generate_clues.py --lang nl --dry-run     # see what would run
-export TESSERA_BASE_URL="http://localhost:30000/v1"   # your SGLang/vLLM endpoint
+export TESSERA_BASE_URL="http://localhost:30000/v1"
 export TESSERA_MODEL="your-open-weight-model"
-python3 generate_clues.py --lang nl --limit 500   # generate -> VALIDATE -> write
-python3 validate_clues.py --audit-db --lang en    # re-audit any clues in the DB
+python3 generate_clues.py --lang nl --workers 16 --limit 500
+python3 validate_clues.py --audit-db --lang en
 ```
 
-Every generated clue is forced through `validate_clue()` before insert. The obvious next
-iteration is a retry-with-feedback loop (feed the rejection reason back to the model).
+Every generated clue goes through `validate_clue` before insertion. The
+pipeline retries once with the rejection reason fed back to the model.
 
-## Open upstream step: non-English theme membership
+### iOS app
 
-`word_groups` is populated for English only. Assigning the other languages' words to the 100
-themes is its own task. Two viable routes, both better than hand-mapping:
-1. Translate/expand the English theme anchors, then string-match.
-2. Multilingual sentence embeddings → nearest-theme assignment with a confidence floor.
+See [`Tessera/SETUP.md`](Tessera/SETUP.md). Short version:
 
-The `--theme` filter on the pipeline is optional; you can generate clues language-wide and
-assign themes separately.
+```bash
+brew install xcodegen
+cd Tessera
+xcodegen generate
+open Tessera.xcodeproj
+# In Xcode: set your team, build & run.
+```
+
+Multiplayer needs the App Store Connect record and a Game Center capability
+on the App ID. Solo works without those.
+
+### Library tests
+
+```bash
+cd Tessera
+swift test
+```
+
+17 tests cover GridForm parity vs. Python, generator determinism (load-
+bearing for fair multiplayer), incidental-free placement, codec roundtrips,
+game-state semantics, and corpus integrity.
 
 ---
 
-## What's intentionally NOT here yet
+## What's intentionally *not* here
 
-The Swift app: grid generator (backtracking CSP over `grid_form`), the play loop, Game Center
-turn-based match with the 60s shot clock + reveal-on-pass, StoreKit 2 unlock, SwiftUI shell,
-and graphics. That's the next build. `Tessera/` is an empty placeholder for it.
-
-## Locked design decisions
-
-- Clued crossword, mixed Latin-script grids, A–Z dual-form (surface + grid_form).
-- Free = English only; Pro = ≤3 of 19 languages, mixed grids.
-- Multiplayer: async turn-based, 60s shot clock once you engage, reveal-on-pass.
-- Latin-only (Cyrillic/Greek excluded — they cannot cross Latin words).
-- LLM clue-gen **plus** a mandatory validation harness; the harness is the IP.
+- StoreKit, Pro entitlement, language-cap gating. Removed — free game.
+- Sound and haptics beyond the SwiftUI defaults.
+- App Store screenshots and marketing copy.
+- Localisation of the app UI (UI is English; clues are in their native
+  language).
+- Daily-puzzle mode. The brief was on-demand only.
