@@ -42,11 +42,13 @@ final class AppModel {
     /// Total puzzles solved across solo + multiplayer. Apple's leaderboard
     /// replaces (doesn't accumulate) on submit, so we track the running
     /// total locally and report the full value each time.
-    var puzzlesSolved: Int = UserDefaults.standard.integer(forKey: Self.kPuzzlesSolved) {
-        didSet { UserDefaults.standard.set(puzzlesSolved, forKey: Self.kPuzzlesSolved) }
+    // Use the concrete type (not `Self`) for keys referenced in stored-
+    // property initializers — Swift disallows covariant `Self` there.
+    var puzzlesSolved: Int = UserDefaults.standard.integer(forKey: AppModel.kPuzzlesSolved) {
+        didSet { UserDefaults.standard.set(puzzlesSolved, forKey: AppModel.kPuzzlesSolved) }
     }
-    var multiplayerWins: Int = UserDefaults.standard.integer(forKey: Self.kMultiplayerWins) {
-        didSet { UserDefaults.standard.set(multiplayerWins, forKey: Self.kMultiplayerWins) }
+    var multiplayerWins: Int = UserDefaults.standard.integer(forKey: AppModel.kMultiplayerWins) {
+        didSet { UserDefaults.standard.set(multiplayerWins, forKey: AppModel.kMultiplayerWins) }
     }
 
     private static let kPuzzlesSolved   = "tessera.puzzlesSolved"
