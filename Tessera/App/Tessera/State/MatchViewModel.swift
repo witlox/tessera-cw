@@ -15,10 +15,14 @@ final class MatchViewModel {
     /// Set when GameKit fires `.matchEnded` (opponent quit, timeout, etc.).
     /// The view shows a completion alert and routes back to Home.
     var didEnd: Bool = false
-    /// True on the local client whose move completed the puzzle. The view
-    /// uses it to attribute "you won" vs "opponent solved it" and to drive
-    /// the multiplayer-wins leaderboard increment.
+    /// True on the local client whose move completed the puzzle, OR when the
+    /// both-done tiebreak put us on top. Drives the multiplayer-wins
+    /// leaderboard increment.
     var didWin: Bool = false
+    /// Toggle that flashes wrong cells red. Mirrors solo's `showErrors`;
+    /// off by default. The puzzle solution is local on both clients anyway,
+    /// so this is a self-help hint, not asymmetric information.
+    var showErrors: Bool = false
 
     private let service: MatchService
 
@@ -34,6 +38,15 @@ final class MatchViewModel {
 
     var isMyTurn: Bool { payload.currentTurnPlayer == me }
 
+    /// Whether the local player has already permanently signalled "I'm done".
+    var iSignalledDone: Bool { payload.doneSignals.contains(me) }
+
+    /// Whether the opponent has already signalled done.
+    var opponentSignalledDone: Bool {
+        guard let other = payload.other(than: me) else { return false }
+        return payload.doneSignals.contains(other)
+    }
+
     /// Returns the placed entry the cursor is on (across preferred).
     func currentClue(for selection: GameState.Selection) -> PlacedEntry? {
         puzzle.placed.first { p in
@@ -42,14 +55,72 @@ final class MatchViewModel {
     }
 
     func submitLetter(_ letter: Character, at coord: Coord, deadline: Date) async throws {
-        let move = Move(cell: CoordWire(coord), letter: letter, atTurnDeadline: deadline)
-        try await service.submit(move, in: handle)
-        // Local optimistic apply; opponent receives via GKLocalPlayerListener.
-        state.place(letter, at: coord, in: puzzle)
-        // If that letter solved the puzzle, we win and end the match.
-        if state.isComplete(puzzle), !me.isEmpty {
+        let move = Move(by: me, cell: CoordWire(coord), letter: letter,
+                        atTurnDeadline: deadline)
+        // Build a hypothetical post-placement state so we can decide whether
+        // the letter completes the puzzle (→ win) or completes a single
+        // entry correctly (→ auto-pass).
+        var after = state
+        after.place(letter, at: coord, in: puzzle)
+
+        // 1) Whole puzzle complete? Local optimistic apply, submit, then end.
+        if after.isComplete(puzzle), !me.isEmpty {
+            try await service.submit(move, in: handle)
+            state = after
             didWin = true
             try? await service.endMatch(handle: handle, winnerPlayerID: me)
+            return
+        }
+
+        // 2) An entry just transitioned from "not complete" to "complete and
+        // all correct" — auto-pass to the opponent.
+        if entryJustCompletedCorrectly(before: state, after: after, at: coord) != nil {
+            try await service.submitClosing(move, in: handle)
+            state = after
+            return
+        }
+
+        // 3) Ordinary letter — saveCurrentTurn, keep playing.
+        try await service.submit(move, in: handle)
+        state = after
+    }
+
+    private func entryJustCompletedCorrectly(before: GameState, after: GameState,
+                                             at coord: Coord) -> PlacedEntry? {
+        for entry in puzzle.placed where entry.cells.contains(coord) {
+            let wasCompleteBefore = entry.cells.allSatisfy { c in
+                puzzle.solution[c] == before.effectiveLetter(c, in: puzzle)
+            }
+            if wasCompleteBefore { continue }
+            let isCompleteAfter = entry.cells.allSatisfy { c in
+                puzzle.solution[c] == after.effectiveLetter(c, in: puzzle)
+            }
+            if isCompleteAfter { return entry }
+        }
+        return nil
+    }
+
+    /// "I'm done" — irrevocable. If we're the second to signal, compute the
+    /// winner by correct-letter count (tiebreak: first-done wins) and end
+    /// the match in the same network call. Otherwise just hand the turn
+    /// over; opponent plays freely until they also signal done.
+    func signalDone() async throws {
+        if opponentSignalledDone {
+            let myCount = payload.correctLetterCount(playerID: me, puzzle: puzzle)
+            let opp = payload.other(than: me) ?? ""
+            let oppCount = payload.correctLetterCount(playerID: opp, puzzle: puzzle)
+            let winner: String
+            if myCount > oppCount { winner = me }
+            else if oppCount > myCount { winner = opp }
+            else {
+                // Tie: whoever signalled done first. opp is the first since
+                // we're about to be the second.
+                winner = opp
+            }
+            didWin = (winner == me)
+            try await service.signalDone(in: handle, finalWinner: winner)
+        } else {
+            try await service.signalDone(in: handle, finalWinner: nil)
         }
     }
 

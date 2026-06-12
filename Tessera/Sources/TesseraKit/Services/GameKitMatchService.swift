@@ -72,7 +72,11 @@ public final class GameKitMatchService: NSObject, MatchService, GKLocalPlayerLis
         // Fresh match — we're the player who initiated it.
         guard let config = seedingIfEmpty else { throw MatchError.notSeeded }
         let players = gkMatch.participants.compactMap { $0.player?.gamePlayerID }
-        let payload = MatchPayload(config: config, players: players, createdAt: Date())
+        // Player A (the seeder) takes the first turn; GameKit's matchmaker
+        // hands control to us right after creation.
+        let payload = MatchPayload(config: config, players: players,
+                                   createdAt: Date(),
+                                   currentPlayer: GKLocalPlayer.local.gamePlayerID)
         let encoded = try MoveCodec.encode(payload)
         try await save(matchData: encoded, in: gkMatch, endTurn: false)
         return (MatchHandle(id: gkMatch.matchID, config: config), payload)
@@ -87,20 +91,46 @@ public final class GameKitMatchService: NSObject, MatchService, GKLocalPlayerLis
 
     public func submit(_ move: Move, in handle: MatchHandle) async throws {
         let match = try await load(matchID: handle.id)
-        var payload = try MoveCodec.decode(match.matchData ?? Data())
-        let appended = MatchPayload(
-            config: payload.config,
-            moves: payload.moves + [move],
-            passReveals: payload.passReveals,
-            players: payload.players,
-            createdAt: payload.createdAt
-        )
-        payload = appended
-        let data = try MoveCodec.encode(payload)
+        let payload = try MoveCodec.decode(match.matchData ?? Data())
+        let updated = payload.with(moves: payload.moves + [move])
+        let data = try MoveCodec.encode(updated)
         // Letters within a turn do NOT advance the turn — only an explicit
         // pass (or shot-clock-driven pass) ends it. saveCurrentTurn persists
         // the move log without notifying the opponent.
         try await save(matchData: data, in: match, endTurn: false)
+    }
+
+    public func submitClosing(_ move: Move, in handle: MatchHandle) async throws {
+        let match = try await load(matchID: handle.id)
+        let payload = try MoveCodec.decode(match.matchData ?? Data())
+        let me = GKLocalPlayer.local.gamePlayerID
+        let next = payload.other(than: me) ?? me
+        let updated = payload.with(moves: payload.moves + [move],
+                                   currentPlayer: next)
+        let data = try MoveCodec.encode(updated)
+        try await save(matchData: data, in: match, endTurn: true)
+    }
+
+    public func signalDone(in handle: MatchHandle, finalWinner: String?) async throws {
+        let match = try await load(matchID: handle.id)
+        let payload = try MoveCodec.decode(match.matchData ?? Data())
+        let me = GKLocalPlayer.local.gamePlayerID
+        let updated = payload.with(doneSignals: payload.doneSignals + [me],
+                                   currentPlayer: payload.other(than: me) ?? me)
+        let data = try MoveCodec.encode(updated)
+        if let winner = finalWinner {
+            for participant in match.participants {
+                guard let pid = participant.player?.gamePlayerID else { continue }
+                participant.matchOutcome = (pid == winner) ? .won : .lost
+            }
+            try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
+                match.endMatchInTurn(withMatch: data) { error in
+                    if let error { c.resume(throwing: error) } else { c.resume() }
+                }
+            }
+        } else {
+            try await save(matchData: data, in: match, endTurn: true)
+        }
     }
 
     public func endMatch(handle: MatchHandle, winnerPlayerID: String) async throws {
@@ -129,14 +159,10 @@ public final class GameKitMatchService: NSObject, MatchService, GKLocalPlayerLis
         let payload = try MoveCodec.decode(match.matchData ?? Data())
         let me = GKLocalPlayer.local.gamePlayerID
         let reveal = MatchPayload.PassReveal(by: me, revealed: cell, at: Date())
-        let appended = MatchPayload(
-            config: payload.config,
-            moves: payload.moves,
-            passReveals: payload.passReveals + [reveal],
-            players: payload.players,
-            createdAt: payload.createdAt
-        )
-        let data = try MoveCodec.encode(appended)
+        let next = payload.other(than: me) ?? me
+        let updated = payload.with(passReveals: payload.passReveals + [reveal],
+                                   currentPlayer: next)
+        let data = try MoveCodec.encode(updated)
         try await save(matchData: data, in: match, endTurn: true)
     }
 

@@ -14,6 +14,7 @@ struct MatchPlayView: View {
     @State private var error: String?
     @State private var submitting = false
     @State private var showCompletion = false
+    @State private var confirmDone = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -24,6 +25,9 @@ struct MatchPlayView: View {
 
             GeometryReader { geo in
                 BoardView(puzzle: match.puzzle, state: stateWithSelection(),
+                          wrongCells: match.showErrors
+                            ? match.state.wrongCells(match.puzzle)
+                            : [],
                           select: { c, o in selection = .init(origin: c, orientation: o) })
                     .frame(width: min(geo.size.width, geo.size.height),
                            height: min(geo.size.width, geo.size.height))
@@ -43,8 +47,8 @@ struct MatchPlayView: View {
                     }
                 }
             )
-            .disabled(!match.isMyTurn || submitting)
-            .opacity(match.isMyTurn ? 1.0 : 0.4)
+            .disabled(!keyboardEnabled)
+            .opacity(keyboardEnabled ? 1.0 : 0.4)
             .padding(.horizontal, 4)
             .padding(.bottom, 8)
         }
@@ -57,8 +61,25 @@ struct MatchPlayView: View {
                 } label: {
                     Label("Pass", systemImage: "forward.end")
                 }
-                .disabled(!match.isMyTurn || submitting)
+                .disabled(!match.isMyTurn || submitting || match.iSignalledDone)
             }
+            ToolbarItem(placement: .secondaryAction) {
+                MatchOverflowMenu(
+                    match: match,
+                    onIAmDone: { confirmDone = true }
+                )
+            }
+        }
+        .confirmationDialog(
+            match.opponentSignalledDone
+                ? "End the match? Your opponent has already signalled done — this finishes the game."
+                : "Mark yourself as done? You won't be able to place any more letters; your opponent keeps playing until they're done too.",
+            isPresented: $confirmDone, titleVisibility: .visible
+        ) {
+            Button("I'm done", role: .destructive) {
+                Task { await signalDone() }
+            }
+            Button("Cancel", role: .cancel) {}
         }
         .alert("Multiplayer error", isPresented: Binding(
             get: { error != nil }, set: { if !$0 { error = nil } }
@@ -86,9 +107,11 @@ struct MatchPlayView: View {
         .alert(match.didWin ? "You won" : "Match complete",
                isPresented: $showCompletion) {
             Button("Done") {
-                // Only counts as participation if the puzzle was actually
-                // solved — quits/timeouts shouldn't credit either player.
-                if match.state.isComplete(match.puzzle) {
+                // Counts as participation if the puzzle was actually solved
+                // OR if both players signalled done (legitimate conclusion).
+                // Quits / mid-game timeouts shouldn't credit either player.
+                let bothDone = match.iSignalledDone && match.opponentSignalledDone
+                if match.state.isComplete(match.puzzle) || bothDone {
                     model.recordMultiplayerCompletion(didWin: match.didWin)
                 }
                 model.endMatch()
@@ -97,19 +120,33 @@ struct MatchPlayView: View {
         } message: {
             if match.state.isComplete(match.puzzle) {
                 Text(match.didWin ? "Your move solved the puzzle." : "Your opponent solved it first.")
+            } else if match.iSignalledDone && match.opponentSignalledDone {
+                Text(match.didWin
+                    ? "Both players called it. You placed more correct letters."
+                    : "Both players called it. Your opponent placed more correct letters.")
             } else {
                 Text("The other player left or the match timed out.")
             }
         }
     }
 
+    private var keyboardEnabled: Bool {
+        match.isMyTurn && !submitting && !match.iSignalledDone
+    }
+
     private var statusBar: some View {
         HStack(spacing: 12) {
-            Image(systemName: match.isMyTurn ? "person.fill" : "person")
-            Text(match.isMyTurn ? "Your turn" : "Opponent's turn")
-                .font(.subheadline.weight(.medium))
+            if match.iSignalledDone {
+                Image(systemName: "flag.checkered")
+                Text("You're done — waiting for opponent")
+                    .font(.subheadline.weight(.medium))
+            } else {
+                Image(systemName: match.isMyTurn ? "person.fill" : "person")
+                Text(match.isMyTurn ? "Your turn" : "Opponent's turn")
+                    .font(.subheadline.weight(.medium))
+            }
             Spacer()
-            if match.isMyTurn {
+            if match.isMyTurn && !match.iSignalledDone {
                 Label(timeString(clock.remaining), systemImage: "timer")
                     .monospacedDigit()
                     .font(.subheadline)
@@ -167,7 +204,7 @@ struct MatchPlayView: View {
     }
 
     private func passTurn() async {
-        guard match.isMyTurn, !submitting else { return }
+        guard match.isMyTurn, !submitting, !match.iSignalledDone else { return }
         submitting = true
         clock.stop()
         defer { submitting = false }
@@ -176,6 +213,45 @@ struct MatchPlayView: View {
         } catch {
             self.error = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
             if match.isMyTurn { startClock() }
+        }
+    }
+
+    private func signalDone() async {
+        guard !submitting, !match.iSignalledDone else { return }
+        submitting = true
+        clock.stop()
+        defer { submitting = false }
+        do {
+            try await match.signalDone()
+        } catch {
+            self.error = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+        }
+    }
+}
+
+/// Overflow menu split into its own view so its body only re-runs when
+/// `match.showErrors` (which lives on the menu) changes — keeps the menu
+/// from re-rendering on every keystroke and silences the
+/// `updateVisibleMenuWithBlock` warning.
+private struct MatchOverflowMenu: View {
+    @Bindable var match: MatchViewModel
+    let onIAmDone: () -> Void
+
+    var body: some View {
+        Menu {
+            Button {
+                match.showErrors.toggle()
+            } label: {
+                Label(match.showErrors ? "Hide wrong cells" : "Mark wrong cells",
+                      systemImage: match.showErrors ? "checkmark" : "exclamationmark.triangle")
+            }
+            Divider()
+            Button(role: .destructive, action: onIAmDone) {
+                Label("I'm done", systemImage: "flag.checkered")
+            }
+            .disabled(match.iSignalledDone)
+        } label: {
+            Label("More", systemImage: "ellipsis.circle")
         }
     }
 }

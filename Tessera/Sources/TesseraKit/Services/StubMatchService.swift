@@ -32,7 +32,13 @@ public final class StubMatchService: MatchService, @unchecked Sendable {
     public func submit(_ move: Move, in match: MatchHandle) async throws {
         throw Error.unavailable
     }
+    public func submitClosing(_ move: Move, in match: MatchHandle) async throws {
+        throw Error.unavailable
+    }
     public func pass(revealing cell: CoordWire, in match: MatchHandle) async throws {
+        throw Error.unavailable
+    }
+    public func signalDone(in match: MatchHandle, finalWinner: String?) async throws {
         throw Error.unavailable
     }
     public func endMatch(handle: MatchHandle, winnerPlayerID: String) async throws {

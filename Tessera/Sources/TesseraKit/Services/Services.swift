@@ -66,15 +66,27 @@ public protocol MatchService {
     func payload(for match: MatchHandle) async throws -> MatchPayload
 
     /// Submit one filled cell within the active turn. Does NOT advance the
-    /// turn — only `pass` does that. The player keeps placing letters until
-    /// they pass voluntarily or the shot clock expires.
+    /// turn — only `pass` / `submitClosing` / `signalDone` do that. The
+    /// player keeps placing letters until they pass voluntarily, complete a
+    /// word correctly, or the shot clock expires.
     func submit(_ move: Move, in match: MatchHandle) async throws
+
+    /// Submit one filled cell AND end the turn in one shot. Used by the
+    /// auto-pass-on-word-complete path so the opponent is notified
+    /// immediately of the move that closed the word.
+    func submitClosing(_ move: Move, in match: MatchHandle) async throws
 
     /// Voluntarily pass without filling. Caller picks the cell to reveal —
     /// it has the local Puzzle and the current GameState, so it can pick an
     /// untouched correct cell deterministically. Both clients compute the
     /// same candidate set from the seed + move log, so they agree.
     func pass(revealing cell: CoordWire, in match: MatchHandle) async throws
+
+    /// Mark the local player as "I'm done". When `finalWinner` is nil the
+    /// turn is handed to the opponent (first-done case). When non-nil this
+    /// is the second-done call — the match is ended with that winner ID
+    /// and final `matchOutcome`s set in the same operation.
+    func signalDone(in match: MatchHandle, finalWinner: String?) async throws
 
     /// End the turn-based match. Sets `matchOutcome` to .won on the
     /// participant whose `gamePlayerID` matches `winnerPlayerID` and .lost
@@ -113,18 +125,23 @@ public struct MatchHandle: Sendable, Hashable {
 }
 
 public struct Move: Sendable, Codable, Hashable {
+    /// Game Center `gamePlayerID` of the player who placed this letter. Used
+    /// to attribute correct-letter count for the "both done → winner" tiebreak.
+    public let by: String
     public let cell: CoordWire
     public let letter: Character
     /// Server-trusted shot-clock boundary (when the placing player's turn ends).
     public let atTurnDeadline: Date
-    public init(cell: CoordWire, letter: Character, atTurnDeadline: Date) {
-        self.cell = cell; self.letter = letter; self.atTurnDeadline = atTurnDeadline
+    public init(by: String, cell: CoordWire, letter: Character, atTurnDeadline: Date) {
+        self.by = by; self.cell = cell; self.letter = letter
+        self.atTurnDeadline = atTurnDeadline
     }
 
-    private enum CodingKeys: String, CodingKey { case cell, letter, atTurnDeadline }
+    private enum CodingKeys: String, CodingKey { case by, cell, letter, atTurnDeadline }
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(by, forKey: .by)
         try c.encode(cell, forKey: .cell)
         try c.encode(String(letter), forKey: .letter)
         try c.encode(atTurnDeadline, forKey: .atTurnDeadline)
@@ -132,6 +149,10 @@ public struct Move: Sendable, Codable, Hashable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        // `by` is optional during decoding for safety against any in-flight
+        // pre-bump payloads; "" means "unattributed" and won't match either
+        // player when the tiebreak runs.
+        by = (try? c.decode(String.self, forKey: .by)) ?? ""
         cell = try c.decode(CoordWire.self, forKey: .cell)
         let s = try c.decode(String.self, forKey: .letter)
         guard let ch = s.first else {
