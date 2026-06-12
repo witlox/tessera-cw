@@ -32,7 +32,10 @@ struct MatchPlayView: View {
 
             KeyboardView(
                 onLetter: { ch in Task { await submit(letter: ch) } },
-                onBackspace: { /* multiplayer is single-letter-per-turn */ },
+                // Re-typing on a cell overwrites — this is the closest thing
+                // to "erase" we offer in multiplayer without inventing a
+                // separate "erase" wire move. Backspace is therefore a no-op.
+                onBackspace: { },
                 onSwap: {
                     if var sel = selection {
                         sel.orientation = sel.orientation == .across ? .down : .across
@@ -41,7 +44,7 @@ struct MatchPlayView: View {
                 }
             )
             .disabled(!match.isMyTurn || submitting)
-            .opacity((match.isMyTurn && !submitting) ? 1.0 : 0.4)
+            .opacity(match.isMyTurn ? 1.0 : 0.4)
             .padding(.horizontal, 4)
             .padding(.bottom, 8)
         }
@@ -70,9 +73,11 @@ struct MatchPlayView: View {
                 selection = .init(origin: first.origin, orientation: first.orientation)
             }
         }
+        .onChange(of: match.isMyTurn) { _, isMine in
+            // Inbound event (opponent passed) flipped whose turn it is.
+            isMine ? startClock() : clock.reset()
+        }
         .onChange(of: match.payload.moves.count) { _, _ in
-            // Inbound event flipped whose turn it is.
-            match.isMyTurn ? startClock() : clock.reset()
             if match.state.isComplete(match.puzzle) { showCompletion = true }
         }
         .onChange(of: match.didEnd) { _, ended in
@@ -152,13 +157,12 @@ struct MatchPlayView: View {
         let coord = sel.origin
         guard match.puzzle.solution[coord] != nil else { return }
         submitting = true
-        clock.stop()
         defer { submitting = false }
+        // Clock keeps ticking — placing a letter is one step of the same turn.
         do {
             try await match.submitLetter(letter, at: coord, deadline: Date().addingTimeInterval(60))
         } catch {
             self.error = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
-            if match.isMyTurn { startClock() }   // restore if submit failed
         }
     }
 

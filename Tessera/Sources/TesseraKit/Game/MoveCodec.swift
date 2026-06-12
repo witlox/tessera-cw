@@ -76,13 +76,11 @@ public extension MatchPayload {
         return s
     }
 
-    /// Whose turn it is right now, given the move count modulo player count.
-    /// Passes count as "no move" so they also advance the turn — encoded by
-    /// the caller appending to `passReveals`, and updating `moves` count via
-    /// virtual tick (we treat reveals as turn-advancing too).
+    /// Whose turn it is right now. Letters placed within a turn do NOT
+    /// advance the turn — only an explicit pass (with reveal) ends it. So
+    /// the rotation is driven purely by `passReveals.count`.
     var currentTurnPlayer: String? {
         guard !players.isEmpty else { return nil }
-        let turn = moves.count + passReveals.count
-        return players[turn % players.count]
+        return players[passReveals.count % players.count]
     }
 }

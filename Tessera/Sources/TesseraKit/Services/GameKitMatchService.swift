@@ -97,7 +97,10 @@ public final class GameKitMatchService: NSObject, MatchService, GKLocalPlayerLis
         )
         payload = appended
         let data = try MoveCodec.encode(payload)
-        try await save(matchData: data, in: match, endTurn: true)
+        // Letters within a turn do NOT advance the turn — only an explicit
+        // pass (or shot-clock-driven pass) ends it. saveCurrentTurn persists
+        // the move log without notifying the opponent.
+        try await save(matchData: data, in: match, endTurn: false)
     }
 
     public func endMatch(handle: MatchHandle, winnerPlayerID: String) async throws {

@@ -35,9 +35,32 @@ final class MoveCodecTests: XCTestCase {
         var payload = MatchPayload(config: config, players: players, createdAt: Date())
         XCTAssertEqual(payload.currentTurnPlayer, "p1")
 
+        // Letters within p1's turn must NOT flip the turn.
+        payload = MatchPayload(config: config,
+                               moves: [
+                                Move(cell: CoordWire(0,0), letter: "A", atTurnDeadline: Date()),
+                                Move(cell: CoordWire(0,1), letter: "B", atTurnDeadline: Date())
+                               ],
+                               passReveals: [], players: players, createdAt: Date())
+        XCTAssertEqual(payload.currentTurnPlayer, "p1")
+
+        // A pass (with reveal) flips the turn to p2.
         payload = MatchPayload(config: config,
                                moves: [Move(cell: CoordWire(0,0), letter: "A", atTurnDeadline: Date())],
-                               passReveals: [], players: players, createdAt: Date())
+                               passReveals: [
+                                MatchPayload.PassReveal(by: "p1", revealed: CoordWire(2,2), at: Date())
+                               ],
+                               players: players, createdAt: Date())
         XCTAssertEqual(payload.currentTurnPlayer, "p2")
+
+        // Another pass flips back.
+        payload = MatchPayload(config: config,
+                               moves: [],
+                               passReveals: [
+                                MatchPayload.PassReveal(by: "p1", revealed: CoordWire(2,2), at: Date()),
+                                MatchPayload.PassReveal(by: "p2", revealed: CoordWire(3,3), at: Date())
+                               ],
+                               players: players, createdAt: Date())
+        XCTAssertEqual(payload.currentTurnPlayer, "p1")
     }
 }

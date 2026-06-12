@@ -65,7 +65,9 @@ public protocol MatchService {
     /// after every inbound event to absorb the opponent's last move.
     func payload(for match: MatchHandle) async throws -> MatchPayload
 
-    /// Submit one filled cell, then advance the turn to the opponent.
+    /// Submit one filled cell within the active turn. Does NOT advance the
+    /// turn — only `pass` does that. The player keeps placing letters until
+    /// they pass voluntarily or the shot clock expires.
     func submit(_ move: Move, in match: MatchHandle) async throws
 
     /// Voluntarily pass without filling. Caller picks the cell to reveal —
