@@ -214,8 +214,17 @@ public final class GameKitMatchService: NSObject, MatchService, GKLocalPlayerLis
     private func save(matchData data: Data, in match: GKTurnBasedMatch,
                       endTurn: Bool) async throws {
         if endTurn {
+            // Filter by object identity against `currentParticipant`, NOT by
+            // `player?.gamePlayerID`. Right after an invitee accepts, GameKit
+            // can take a moment to bind the `GKPlayer` to that participant —
+            // during the window `participant.player` is nil, so the
+            // gamePlayerID filter (`nil != us`) would keep the unbound slot
+            // and the server rejects the endTurn with GKError 23 /
+            // GKServerStatusCode 5102 ("invalid participant / turn state").
+            // Identity-against-currentParticipant works regardless of player
+            // resolution; see Apple's Turn-Based Matches guide.
             let nextParticipants = match.participants.filter {
-                $0.player?.gamePlayerID != GKLocalPlayer.local.gamePlayerID
+                $0 !== match.currentParticipant
             }
             try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
                 match.endTurn(withNextParticipants: nextParticipants,
