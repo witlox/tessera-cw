@@ -127,8 +127,11 @@ private struct MatchCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(match.handle.config.languages.map(\.displayName).joined(separator: " + "))
+            Text("vs \(match.handle.opponentDisplayName ?? "Opponent")")
                 .font(.headline)
+            Text(match.handle.config.languages.map(\.displayName).joined(separator: " + "))
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
             HStack(spacing: 12) {
                 Label(match.handle.config.difficulty.rawValue.capitalized,
                       systemImage: "gauge.with.dots.needle.50percent")

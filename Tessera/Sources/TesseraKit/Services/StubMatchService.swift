@@ -47,6 +47,7 @@ public final class StubMatchService: MatchService, @unchecked Sendable {
     public func reportLeaderboard(score: Int, to id: LeaderboardID) async throws {
         // Silently ignore — caller treats leaderboard posts as best-effort.
     }
+    public func loadActiveMatchIDs() async throws -> [String] { [] }
 
     public enum Error: LocalizedError {
         case unavailable

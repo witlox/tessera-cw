@@ -114,15 +114,17 @@ public final class GameKitMatchService: NSObject, MatchService, GKLocalPlayerLis
                        seedingIfEmpty: MatchConfig?) async throws -> (MatchHandle, MatchPayload) {
         guard isAuthenticated else { throw MatchError.notAuthenticated }
         let gkMatch = try await load(matchID: matchID)
+        let me = GKLocalPlayer.local.gamePlayerID
+        let opponentName = opponentDisplayName(in: gkMatch, me: me)
         if let data = gkMatch.matchData, !data.isEmpty {
             // Resumed match (or the opponent has already seeded it).
             let raw = try MoveCodec.decode(data)
             let payload = reconcile(payload: raw, with: gkMatch)
-            return (MatchHandle(id: gkMatch.matchID, config: payload.config), payload)
+            return (MatchHandle(id: gkMatch.matchID, config: payload.config,
+                                opponentDisplayName: opponentName), payload)
         }
         // Fresh match — we're the player who initiated it.
         guard let config = seedingIfEmpty else { throw MatchError.notSeeded }
-        let me = GKLocalPlayer.local.gamePlayerID
         let players = mergeParticipants(into: [], from: gkMatch.participants, me: me)
         // Player A (the seeder) takes the first turn; GameKit's matchmaker
         // hands control to us right after creation.
@@ -131,13 +133,35 @@ public final class GameKitMatchService: NSObject, MatchService, GKLocalPlayerLis
                                    currentPlayer: me)
         let encoded = try MoveCodec.encode(payload)
         try await save(matchData: encoded, in: gkMatch, endTurn: false)
-        return (MatchHandle(id: gkMatch.matchID, config: config), payload)
+        return (MatchHandle(id: gkMatch.matchID, config: config,
+                            opponentDisplayName: opponentName), payload)
     }
 
     public func payload(for handle: MatchHandle) async throws -> MatchPayload {
         let match = try await load(matchID: handle.id)
         let raw = try MoveCodec.decode(match.matchData ?? Data())
         return reconcile(payload: raw, with: match)
+    }
+
+    public func loadActiveMatchIDs() async throws -> [String] {
+        guard isAuthenticated else { return [] }
+        let matches = try await withCheckedThrowingContinuation {
+            (cont: CheckedContinuation<[GKTurnBasedMatch], Error>) in
+            GKTurnBasedMatch.loadMatches { matches, error in
+                if let error { cont.resume(throwing: error); return }
+                cont.resume(returning: matches ?? [])
+            }
+        }
+        // Filter to non-ended matches; sort most-recently-active first so
+        // the home screen surfaces the match the user is most likely to
+        // care about resuming.
+        return matches
+            .filter { $0.status == .open || $0.status == .matching }
+            .sorted {
+                ($0.lastTurnDate ?? .distantPast)
+                    > ($1.lastTurnDate ?? .distantPast)
+            }
+            .map { $0.matchID }
     }
 
     // MARK: - Submit / pass
@@ -247,13 +271,17 @@ public final class GameKitMatchService: NSObject, MatchService, GKLocalPlayerLis
             newMatchesContinuation?.yield(match.matchID)
         }
 
-        guard let data = match.matchData, !data.isEmpty,
-              let payload = try? MoveCodec.decode(data) else { return }
-        // Last appended move OR pass is what the opponent just did.
-        if let lastMove = payload.moves.last {
-            continuation?.yield(.opponentMove(lastMove))
-        } else if let lastPass = payload.passReveals.last {
-            continuation?.yield(.opponentPassed(revealedCell: lastPass.revealed))
+        // Decode the AUTHORITATIVE matchData GameKit just handed us and
+        // reconcile against the live participant list. Yield this directly
+        // as `.turnReceived(payload)` — the view-model can apply it without
+        // a second `GKTurnBasedMatch.load(withID:)` round trip, which on
+        // TestFlight occasionally returned a stale snapshot after a few
+        // turns and made the opponent's latest moves look like they had
+        // never arrived.
+        if let data = match.matchData, !data.isEmpty,
+           let raw = try? MoveCodec.decode(data) {
+            let reconciled = reconcile(payload: raw, with: match)
+            continuation?.yield(.turnReceived(reconciled))
         }
         if match.status == .ended {
             let winner = match.participants.first { $0.matchOutcome == .won }?
@@ -316,6 +344,19 @@ public final class GameKitMatchService: NSObject, MatchService, GKLocalPlayerLis
             }
         }
         return merged
+    }
+
+    /// Best-effort opponent display name from GameKit's participant list.
+    /// Returns nil while no opponent has had their `GKPlayer` bound yet —
+    /// the view layer should fall back to a generic "Opponent" label.
+    private func opponentDisplayName(in match: GKTurnBasedMatch, me: String) -> String? {
+        for p in match.participants {
+            guard let player = p.player else { continue }
+            if player.gamePlayerID == me { continue }
+            let name = player.displayName
+            if !name.isEmpty { return name }
+        }
+        return nil
     }
 
     /// Best-effort opponent `gamePlayerID`. Tries the merged `players` list

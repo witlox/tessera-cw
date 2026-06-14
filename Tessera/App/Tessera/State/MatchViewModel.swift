@@ -166,17 +166,25 @@ final class MatchViewModel {
         self.state = payload.gameState(for: puzzle)
     }
 
-    /// Subscribe to `service.inbound`; on every event, reload the
-    /// authoritative payload from the backing store and refresh state.
-    /// Surfaces `.matchEnded` events via `didEnd` so the view can route out.
+    /// Subscribe to `service.inbound`. The listener-fed `.turnReceived`
+    /// event carries the freshly-decoded payload from GameKit's
+    /// authoritative `matchData`, so we apply it directly — avoiding a
+    /// `GKTurnBasedMatch.load(withID:)` round trip that on TestFlight
+    /// sometimes returned a stale snapshot and made the opponent's latest
+    /// moves look like they never arrived. `.matchEnded` falls back to a
+    /// reload (the listener doesn't provide a payload in the
+    /// `matchEnded` path) and flips `didEnd` so the view routes home.
     func startListening() {
         Task { [service, handle, weak self] in
             for await event in service.inbound {
                 guard let self else { break }
-                if let fresh = try? await service.payload(for: handle) {
-                    await MainActor.run { self.refresh(payload: fresh) }
-                }
-                if case .matchEnded = event {
+                switch event {
+                case .turnReceived(let payload):
+                    await MainActor.run { self.refresh(payload: payload) }
+                case .matchEnded:
+                    if let fresh = try? await service.payload(for: handle) {
+                        await MainActor.run { self.refresh(payload: fresh) }
+                    }
                     await MainActor.run { self.didEnd = true }
                 }
             }

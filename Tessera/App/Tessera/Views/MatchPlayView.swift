@@ -159,8 +159,7 @@ struct MatchPlayView: View {
     }
 
     private var titleText: String {
-        let langs = match.handle.config.languages.map(\.displayName).joined(separator: " + ")
-        return match.handle.config.themeSlug.map { "\(langs) — \($0.capitalized)" } ?? langs
+        "vs \(match.handle.opponentDisplayName ?? "Opponent")"
     }
 
     private func timeString(_ t: TimeInterval) -> String {

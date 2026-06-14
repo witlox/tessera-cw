@@ -61,6 +61,14 @@ public protocol MatchService {
     /// to attach (and create a view-model).
     var newMatches: AsyncStream<String> { get }
 
+    /// Match IDs of the local player's currently active (non-ended)
+    /// turn-based matches, sorted most-recently-active first. Used by the
+    /// home screen to surface ongoing games at launch without waiting for
+    /// an opponent turn event — without this, a cold-launched app shows
+    /// nothing until the user re-opens the match via an invite or a
+    /// notification tap.
+    func loadActiveMatchIDs() async throws -> [String]
+
     /// Reloads the authoritative payload from the backing store. Called
     /// after every inbound event to absorb the opponent's last move.
     func payload(for match: MatchHandle) async throws -> MatchPayload
@@ -121,7 +129,15 @@ public struct MatchConfig: Sendable, Codable, Hashable {
 public struct MatchHandle: Sendable, Hashable {
     public let id: String
     public let config: MatchConfig
-    public init(id: String, config: MatchConfig) { self.id = id; self.config = config }
+    /// Game Center display name of the opponent at the time of attach.
+    /// Nil while GameKit hasn't yet bound the invitee's `GKPlayer` to the
+    /// participant slot — the view layer falls back to a generic
+    /// "Opponent" string when this is nil.
+    public let opponentDisplayName: String?
+    public init(id: String, config: MatchConfig, opponentDisplayName: String? = nil) {
+        self.id = id; self.config = config
+        self.opponentDisplayName = opponentDisplayName
+    }
 }
 
 public struct Move: Sendable, Codable, Hashable {
@@ -165,9 +181,13 @@ public struct Move: Sendable, Codable, Hashable {
 }
 
 public enum MatchEvent: Sendable {
-    case opponentMove(Move)
-    case opponentPassed(revealedCell: CoordWire)
-    case turnTimedOut
+    /// The opponent just ended their turn (or the user opened a match the
+    /// listener was watching). Carries the freshly-decoded payload from
+    /// GameKit's authoritative `matchData` so the view-model can refresh
+    /// directly — no second server round-trip, and no risk of a stale
+    /// `GKTurnBasedMatch.load(withID:)` cache hit missing the opponent's
+    /// latest moves.
+    case turnReceived(MatchPayload)
     case matchEnded(winner: String?)
 }
 

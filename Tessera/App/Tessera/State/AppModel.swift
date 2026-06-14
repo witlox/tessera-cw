@@ -87,9 +87,13 @@ final class AppModel {
         if let saved = SoloStore.load(), let corpus {
             self.solo = SoloViewModel(corpus: corpus, restored: saved)
         }
-        // Best-effort GameKit auth in the background.
+        // Best-effort GameKit auth in the background, then ask Game Center
+        // for any active turn-based matches the local player is already in
+        // so the home screen can show them without waiting for an opponent
+        // turn event or a fresh invite tap.
         Task { [weak self] in
             try? await self?.signInToGameCenter()
+            await self?.restoreActiveMatches()
         }
         // Listen for matchmaker-picked / friend-invite-arrived matches.
         Task { [weak self] in
@@ -97,6 +101,22 @@ final class AppModel {
             for await matchID in stream {
                 await self?.handleNewMatch(matchID: matchID)
             }
+        }
+    }
+
+    /// After auth resolves, surface the local player's most recent
+    /// non-ended match on Home so the user doesn't have to re-open via a
+    /// notification or invite to see it. Cheap-and-correct: feed each
+    /// match ID through the same `handleNewMatch` pipeline the listener
+    /// uses; the existing duplicate-guard short-circuits if one is already
+    /// loaded, and the first match that attaches wins our single
+    /// `match` slot.
+    private func restoreActiveMatches() async {
+        guard match == nil else { return }
+        guard let ids = try? await match_service.loadActiveMatchIDs() else { return }
+        for id in ids {
+            await handleNewMatch(matchID: id)
+            if match != nil { break }
         }
     }
 
