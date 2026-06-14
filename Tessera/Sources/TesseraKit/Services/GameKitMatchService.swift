@@ -156,8 +156,18 @@ public final class GameKitMatchService: NSObject, MatchService, GKLocalPlayerLis
         // the home screen surfaces the match the user is most likely to
         // care about resuming.
         let active = matches.filter { $0.status == .open || $0.status == .matching }
+        // `GKTurnBasedMatch` has no `lastTurnDate` directly — the most
+        // recent activity is the latest `lastTurnDate` across its
+        // participants, falling back to creationDate for brand-new
+        // matches no participant has touched yet.
+        func lastActivity(_ m: GKTurnBasedMatch) -> Date {
+            let latest = m.participants
+                .compactMap { $0.lastTurnDate }
+                .max()
+            return latest ?? m.creationDate
+        }
         let sorted = active.sorted(by: { (a: GKTurnBasedMatch, b: GKTurnBasedMatch) -> Bool in
-            (a.lastTurnDate ?? .distantPast) > (b.lastTurnDate ?? .distantPast)
+            lastActivity(a) > lastActivity(b)
         })
         return sorted.map { $0.matchID }
     }
