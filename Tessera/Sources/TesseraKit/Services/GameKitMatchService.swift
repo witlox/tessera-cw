@@ -37,24 +37,74 @@ public final class GameKitMatchService: NSObject, MatchService, GKLocalPlayerLis
 
     // MARK: - Authentication
 
+    /// Guards `register(self)` and continuation resume so each happens at
+    /// most once over the app lifetime. GameKit re-invokes
+    /// `authenticateHandler` on UI present, sign-in success, sign-in/out
+    /// transitions, and again whenever downstream surfaces
+    /// (`GKGameCenterViewController` for leaderboards, the matchmaker, etc.)
+    /// make Game Center re-verify the player.
+    private let authStateLock = NSLock()
+    private var isListenerRegistered = false
+
     public func authenticate() async throws {
         if GKLocalPlayer.local.isAuthenticated {
-            GKLocalPlayer.local.register(self)
+            registerListenerOnce()
             return
         }
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            // GameKit fires this handler MORE THAN ONCE across the app's
+            // lifetime — once to present its sign-in UI, once on success,
+            // and again whenever something downstream (presenting
+            // `GKGameCenterViewController` for leaderboards is the one
+            // that surfaced this on TestFlight) makes Game Center
+            // re-verify the player. `CheckedContinuation` traps a second
+            // resume in `libswift_Concurrency` and aborts the process —
+            // the reported crash was exactly that, in closure #1 of
+            // `authenticate()` triggered by the leaderboards button.
+            // `AuthToken` clamps to a single resume; subsequent
+            // invocations just keep the local player state in sync.
+            let token = AuthToken(continuation: cont)
             GKLocalPlayer.local.authenticateHandler = { [weak self] _, error in
+                guard let self else { return }
                 if let error {
-                    self?.lastAuthError = error
-                    cont.resume(throwing: error); return
+                    self.lastAuthError = error
+                    token.resumeOnce { $0.resume(throwing: error) }
+                    return
                 }
                 if GKLocalPlayer.local.isAuthenticated {
-                    GKLocalPlayer.local.register(self!)
-                    cont.resume()
+                    self.registerListenerOnce()
+                    token.resumeOnce { $0.resume() }
                 }
-                // If !isAuthenticated && error == nil, GameKit is presenting UI;
-                // wait for the next callback. Don't resume yet.
+                // !isAuthenticated && error == nil → GameKit is
+                // presenting its sign-in UI; wait for the next callback.
             }
+        }
+    }
+
+    private func registerListenerOnce() {
+        authStateLock.lock()
+        let already = isListenerRegistered
+        isListenerRegistered = true
+        authStateLock.unlock()
+        if !already { GKLocalPlayer.local.register(self) }
+    }
+
+    /// Wraps a `CheckedContinuation` so resuming is idempotent. GameKit
+    /// can call our `authenticateHandler` again after we've already
+    /// completed the awaiting Task — without this, the second resume
+    /// crashes the process via `CheckedContinuation`'s sanity trap.
+    private final class AuthToken: @unchecked Sendable {
+        private var cont: CheckedContinuation<Void, Error>?
+        private let lock = NSLock()
+        init(continuation: CheckedContinuation<Void, Error>) {
+            self.cont = continuation
+        }
+        func resumeOnce(_ op: (CheckedContinuation<Void, Error>) -> Void) {
+            lock.lock()
+            let captured = cont
+            cont = nil
+            lock.unlock()
+            if let captured { op(captured) }
         }
     }
 
