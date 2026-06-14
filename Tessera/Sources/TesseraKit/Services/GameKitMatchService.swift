@@ -66,17 +66,19 @@ public final class GameKitMatchService: NSObject, MatchService, GKLocalPlayerLis
         let gkMatch = try await load(matchID: matchID)
         if let data = gkMatch.matchData, !data.isEmpty {
             // Resumed match (or the opponent has already seeded it).
-            let payload = try MoveCodec.decode(data)
+            let raw = try MoveCodec.decode(data)
+            let payload = reconcile(payload: raw, with: gkMatch)
             return (MatchHandle(id: gkMatch.matchID, config: payload.config), payload)
         }
         // Fresh match — we're the player who initiated it.
         guard let config = seedingIfEmpty else { throw MatchError.notSeeded }
-        let players = gkMatch.participants.compactMap { $0.player?.gamePlayerID }
+        let me = GKLocalPlayer.local.gamePlayerID
+        let players = mergeParticipants(into: [], from: gkMatch.participants, me: me)
         // Player A (the seeder) takes the first turn; GameKit's matchmaker
         // hands control to us right after creation.
         let payload = MatchPayload(config: config, players: players,
                                    createdAt: Date(),
-                                   currentPlayer: GKLocalPlayer.local.gamePlayerID)
+                                   currentPlayer: me)
         let encoded = try MoveCodec.encode(payload)
         try await save(matchData: encoded, in: gkMatch, endTurn: false)
         return (MatchHandle(id: gkMatch.matchID, config: config), payload)
@@ -84,7 +86,8 @@ public final class GameKitMatchService: NSObject, MatchService, GKLocalPlayerLis
 
     public func payload(for handle: MatchHandle) async throws -> MatchPayload {
         let match = try await load(matchID: handle.id)
-        return try MoveCodec.decode(match.matchData ?? Data())
+        let raw = try MoveCodec.decode(match.matchData ?? Data())
+        return reconcile(payload: raw, with: match)
     }
 
     // MARK: - Submit / pass
@@ -92,7 +95,10 @@ public final class GameKitMatchService: NSObject, MatchService, GKLocalPlayerLis
     public func submit(_ move: Move, in handle: MatchHandle) async throws {
         let match = try await load(matchID: handle.id)
         let payload = try MoveCodec.decode(match.matchData ?? Data())
-        let updated = payload.with(moves: payload.moves + [move])
+        let me = GKLocalPlayer.local.gamePlayerID
+        let refreshed = mergeParticipants(into: payload.players, from: match.participants, me: me)
+        let updated = payload.with(moves: payload.moves + [move],
+                                   players: refreshed)
         let data = try MoveCodec.encode(updated)
         // Letters within a turn do NOT advance the turn — only an explicit
         // pass (or shot-clock-driven pass) ends it. saveCurrentTurn persists
@@ -104,8 +110,12 @@ public final class GameKitMatchService: NSObject, MatchService, GKLocalPlayerLis
         let match = try await load(matchID: handle.id)
         let payload = try MoveCodec.decode(match.matchData ?? Data())
         let me = GKLocalPlayer.local.gamePlayerID
-        let next = payload.other(than: me) ?? me
+        let refreshed = mergeParticipants(into: payload.players, from: match.participants, me: me)
+        guard let next = opponentID(in: match, players: refreshed, me: me) else {
+            throw MatchError.opponentNotReady
+        }
         let updated = payload.with(moves: payload.moves + [move],
+                                   players: refreshed,
                                    currentPlayer: next)
         let data = try MoveCodec.encode(updated)
         try await save(matchData: data, in: match, endTurn: true)
@@ -115,8 +125,13 @@ public final class GameKitMatchService: NSObject, MatchService, GKLocalPlayerLis
         let match = try await load(matchID: handle.id)
         let payload = try MoveCodec.decode(match.matchData ?? Data())
         let me = GKLocalPlayer.local.gamePlayerID
+        let refreshed = mergeParticipants(into: payload.players, from: match.participants, me: me)
+        guard let next = opponentID(in: match, players: refreshed, me: me) else {
+            throw MatchError.opponentNotReady
+        }
         let updated = payload.with(doneSignals: payload.doneSignals + [me],
-                                   currentPlayer: payload.other(than: me) ?? me)
+                                   players: refreshed,
+                                   currentPlayer: next)
         let data = try MoveCodec.encode(updated)
         if let winner = finalWinner {
             for participant in match.participants {
@@ -159,8 +174,12 @@ public final class GameKitMatchService: NSObject, MatchService, GKLocalPlayerLis
         let payload = try MoveCodec.decode(match.matchData ?? Data())
         let me = GKLocalPlayer.local.gamePlayerID
         let reveal = MatchPayload.PassReveal(by: me, revealed: cell, at: Date())
-        let next = payload.other(than: me) ?? me
+        let refreshed = mergeParticipants(into: payload.players, from: match.participants, me: me)
+        guard let next = opponentID(in: match, players: refreshed, me: me) else {
+            throw MatchError.opponentNotReady
+        }
         let updated = payload.with(passReveals: payload.passReveals + [reveal],
+                                   players: refreshed,
                                    currentPlayer: next)
         let data = try MoveCodec.encode(updated)
         try await save(matchData: data, in: match, endTurn: true)
@@ -211,8 +230,71 @@ public final class GameKitMatchService: NSObject, MatchService, GKLocalPlayerLis
         }
     }
 
+    // MARK: - Reconciliation helpers
+
+    /// Re-derive `players` and `currentPlayer` against GameKit's authoritative
+    /// state. The matchData we decoded may have been seeded before all
+    /// `GKPlayer` bindings resolved — in that case `payload.players` is
+    /// missing the opponent's ID and `payload.currentPlayer` is whatever
+    /// stale value the last writer (often *us*) committed. GameKit's own
+    /// `currentParticipant` is the only source of truth for whose turn it is.
+    private func reconcile(payload: MatchPayload, with match: GKTurnBasedMatch) -> MatchPayload {
+        let me = GKLocalPlayer.local.gamePlayerID
+        let refreshed = mergeParticipants(into: payload.players,
+                                          from: match.participants, me: me)
+        let serverCurrent = match.currentParticipant?.player?.gamePlayerID
+        let needsPlayers = refreshed != payload.players
+        let needsCurrent = serverCurrent != nil
+            && !serverCurrent!.isEmpty
+            && payload.currentPlayer != serverCurrent!
+        guard needsPlayers || needsCurrent else { return payload }
+        return payload.with(players: refreshed,
+                            currentPlayer: serverCurrent ?? payload.currentPlayer)
+    }
+
+    /// Fold every observed participant `gamePlayerID` into `baseline`,
+    /// preserving order and de-duplicating. `me` is always included so the
+    /// payload stays self-describing even when no opponent has been bound.
+    private func mergeParticipants(into baseline: [String],
+                                    from participants: [GKTurnBasedParticipant],
+                                    me: String) -> [String] {
+        var merged = baseline
+        if !me.isEmpty, !merged.contains(me) { merged.append(me) }
+        for p in participants {
+            if let id = p.player?.gamePlayerID, !id.isEmpty, !merged.contains(id) {
+                merged.append(id)
+            }
+        }
+        return merged
+    }
+
+    /// Best-effort opponent `gamePlayerID`. Tries the merged `players` list
+    /// first; if that's still us-only (opponent's GKPlayer unresolved at the
+    /// time matchData was written), falls back to the non-current participant
+    /// in `match.participants`. Returns nil only when the opponent's
+    /// participant slot has no `player` binding at all — callers should
+    /// surface this as `opponentNotReady` rather than write a payload that
+    /// lies about whose turn it is.
+    private func opponentID(in match: GKTurnBasedMatch,
+                            players: [String], me: String) -> String? {
+        if let other = players.first(where: { $0 != me && !$0.isEmpty }) { return other }
+        return match.participants
+            .first { $0 !== match.currentParticipant }?
+            .player?.gamePlayerID
+    }
+
     private func save(matchData data: Data, in match: GKTurnBasedMatch,
                       endTurn: Bool) async throws {
+        // GameKit rejects both saveCurrentTurn and endTurn with GKError 23 /
+        // GKServerStatusCode 5102 ("Not your turn") when the caller isn't the
+        // current participant server-side. Catch the desync locally so the
+        // view layer can refresh state and re-render isMyTurn correctly
+        // instead of showing the user a raw GKErrorDomain message.
+        let me = GKLocalPlayer.local.gamePlayerID
+        if let current = match.currentParticipant?.player?.gamePlayerID,
+           current != me {
+            throw MatchError.notMyTurn
+        }
         if endTurn {
             // Filter by object identity against `currentParticipant`, NOT by
             // `player?.gamePlayerID`. Right after an invitee accepts, GameKit
@@ -245,6 +327,8 @@ public final class GameKitMatchService: NSObject, MatchService, GKLocalPlayerLis
         case notAuthenticated
         case noMatch
         case notSeeded
+        case notMyTurn
+        case opponentNotReady
         public var errorDescription: String? {
             switch self {
             case .notAuthenticated:
@@ -253,6 +337,10 @@ public final class GameKitMatchService: NSObject, MatchService, GKLocalPlayerLis
                 return "Couldn’t find or load a match. Try again."
             case .notSeeded:
                 return "The match hasn’t been set up yet. Wait a moment and reopen it."
+            case .notMyTurn:
+                return "It’s not your turn anymore — refreshing…"
+            case .opponentNotReady:
+                return "Waiting for the other player to join. Try again in a moment."
             }
         }
     }

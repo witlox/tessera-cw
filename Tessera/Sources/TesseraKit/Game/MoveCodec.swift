@@ -40,17 +40,21 @@ public struct MatchPayload: Sendable, Codable {
         self.currentPlayer = currentPlayer ?? players.first ?? ""
     }
 
-    /// Copy-with for the turn-ending operations.
+    /// Copy-with for the turn-ending operations. `players` is updatable so
+    /// the service layer can fold in opponent IDs that GameKit bound after
+    /// the match was originally seeded (the invitee's GKPlayer often isn't
+    /// resolved on the inviter's device when the matchData is first written).
     public func with(moves: [Move]? = nil,
                      passReveals: [PassReveal]? = nil,
                      doneSignals: [String]? = nil,
+                     players: [String]? = nil,
                      currentPlayer: String? = nil) -> MatchPayload {
         MatchPayload(
             config: config,
             moves: moves ?? self.moves,
             passReveals: passReveals ?? self.passReveals,
             doneSignals: doneSignals ?? self.doneSignals,
-            players: players,
+            players: players ?? self.players,
             createdAt: createdAt,
             currentPlayer: currentPlayer ?? self.currentPlayer
         )

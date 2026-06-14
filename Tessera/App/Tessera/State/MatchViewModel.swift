@@ -77,6 +77,7 @@ final class MatchViewModel {
         if entryJustCompletedCorrectly(before: state, after: after, at: coord) != nil {
             try await service.submitClosing(move, in: handle)
             state = after
+            await refreshPayloadAfterTurnEnd()
             return
         }
 
@@ -119,8 +120,11 @@ final class MatchViewModel {
             }
             didWin = (winner == me)
             try await service.signalDone(in: handle, finalWinner: winner)
+            // Match ended — the inbound `.matchEnded` event flips `didEnd`
+            // and the view routes home; no payload refresh needed.
         } else {
             try await service.signalDone(in: handle, finalWinner: nil)
+            await refreshPayloadAfterTurnEnd()
         }
     }
 
@@ -132,11 +136,28 @@ final class MatchViewModel {
         var rng = SeededRNG(handle.config.seed &+ UInt64(payload.passReveals.count) &+ 17)
         guard let coord = state.pickUntouchedCell(puzzle, rng: &rng) else {
             // Nothing left to reveal — still hand turn over.
-            try await service.pass(revealing: CoordWire(0, 0), in: handle); return
+            try await service.pass(revealing: CoordWire(0, 0), in: handle)
+            await refreshPayloadAfterTurnEnd()
+            return
         }
         try await service.pass(revealing: CoordWire(coord), in: handle)
         state.revealedByOpponent.insert(coord)
         if let truth = puzzle.solution[coord] { state.fills[coord] = truth }
+        await refreshPayloadAfterTurnEnd()
+    }
+
+    /// Pull the canonical payload from the service so `isMyTurn` flips
+    /// immediately after a turn-ending write. The service-side
+    /// `payload(for:)` reconciles against GameKit's `currentParticipant`,
+    /// folds in any newly-bound opponent ID, and corrects a stale
+    /// `currentPlayer` baked in by a previous write made before the
+    /// opponent's `GKPlayer` was resolved. Without this, our local payload
+    /// still says it's our turn after our own endTurn and the UI lets the
+    /// user tap into a `GKError 23 / GKServerStatusCode 5102` rejection.
+    private func refreshPayloadAfterTurnEnd() async {
+        if let fresh = try? await service.payload(for: handle) {
+            self.payload = fresh
+        }
     }
 
     /// Replay payload to refresh state after an inbound event.
