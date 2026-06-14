@@ -26,6 +26,16 @@ final class AppModel {
     /// is active.
     var localPlayerID: String = ""
 
+    /// Mirror of `GKLocalPlayer.local.isAuthenticated`, surfaced as an
+    /// `@Observable` property so SwiftUI views (HomeView's Leaderboards
+    /// button, MultiplayerView, etc.) re-render when Game Center finishes
+    /// signing the user in. Reading
+    /// `model.match_service.isAuthenticated` directly is a method call on
+    /// a non-observable type and SwiftUI can't notice when GameKit flips
+    /// it — that's why the Leaderboards button stayed disabled after a
+    /// successful sandbox sign-in.
+    var isGameCenterAuthenticated: Bool = false
+
     /// Filled by `MultiplayerView` right before it presents the matchmaker.
     /// When `newMatches` fires for a brand-new match we initiated, we use
     /// this to seed its `matchData`. Cleared once consumed.
@@ -79,12 +89,7 @@ final class AppModel {
         }
         // Best-effort GameKit auth in the background.
         Task { [weak self] in
-            try? await self?.match_service.authenticate()
-            #if canImport(GameKit)
-            await MainActor.run {
-                self?.localPlayerID = GKLocalPlayer.local.gamePlayerID
-            }
-            #endif
+            try? await self?.signInToGameCenter()
         }
         // Listen for matchmaker-picked / friend-invite-arrived matches.
         Task { [weak self] in
@@ -162,6 +167,24 @@ final class AppModel {
 
     func endMatch() {
         match = nil
+    }
+
+    /// Drives Game Center sign-in and mirrors the result into observable
+    /// properties so SwiftUI views re-render when auth finishes. Called
+    /// from `bootstrap()` for the silent initial attempt and from
+    /// `MultiplayerView` for the explicit "Sign in" button. Errors
+    /// propagate so the multiplayer screen can surface them; the
+    /// observable flag still reflects whatever state GameKit ended up in.
+    func signInToGameCenter() async throws {
+        defer {
+            #if canImport(GameKit)
+            localPlayerID = GKLocalPlayer.local.gamePlayerID
+            isGameCenterAuthenticated = GKLocalPlayer.local.isAuthenticated
+            #else
+            isGameCenterAuthenticated = match_service.isAuthenticated
+            #endif
+        }
+        try await match_service.authenticate()
     }
 
     // MARK: - Completion recording (fan out to leaderboards)

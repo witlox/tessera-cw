@@ -16,7 +16,7 @@ struct MultiplayerView: View {
         NavigationStack {
             Form {
                 Section("Status") {
-                    if model.match_service.isAuthenticated {
+                    if model.isGameCenterAuthenticated {
                         Label("Signed into Game Center", systemImage: "checkmark.seal")
                             .foregroundStyle(.green)
                     } else {
@@ -71,7 +71,7 @@ struct MultiplayerView: View {
                             Spacer()
                         }
                     }
-                    .disabled(!model.match_service.isAuthenticated || languages.isEmpty)
+                    .disabled(!model.isGameCenterAuthenticated || languages.isEmpty)
                 } footer: {
                     Text("Game Center's matchmaker can add specific friends (or anyone in your contacts), or auto-match you with another player.")
                         .font(.footnote).foregroundStyle(.secondary)
@@ -132,7 +132,7 @@ struct MultiplayerView: View {
         signingIn = true
         defer { signingIn = false }
         do {
-            try await model.match_service.authenticate()
+            try await model.signInToGameCenter()
         } catch {
             self.error = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
         }

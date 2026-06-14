@@ -54,7 +54,7 @@ struct HomeView: View {
                 } label: {
                     Label("Leaderboards", systemImage: "trophy")
                 }
-                .disabled(!model.match_service.isAuthenticated)
+                .disabled(!model.isGameCenterAuthenticated)
             }
 
             Section("Your stats") {
