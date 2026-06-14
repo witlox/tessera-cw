@@ -155,13 +155,11 @@ public final class GameKitMatchService: NSObject, MatchService, GKLocalPlayerLis
         // Filter to non-ended matches; sort most-recently-active first so
         // the home screen surfaces the match the user is most likely to
         // care about resuming.
-        return matches
-            .filter { $0.status == .open || $0.status == .matching }
-            .sorted {
-                ($0.lastTurnDate ?? .distantPast)
-                    > ($1.lastTurnDate ?? .distantPast)
-            }
-            .map { $0.matchID }
+        let active = matches.filter { $0.status == .open || $0.status == .matching }
+        let sorted = active.sorted(by: { (a: GKTurnBasedMatch, b: GKTurnBasedMatch) -> Bool in
+            (a.lastTurnDate ?? .distantPast) > (b.lastTurnDate ?? .distantPast)
+        })
+        return sorted.map { $0.matchID }
     }
 
     // MARK: - Submit / pass
