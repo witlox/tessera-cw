@@ -24,8 +24,8 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.witlox.TesseraCrossword
-        MARKETING_VERSION: "1.1.0"
-        CURRENT_PROJECT_VERSION: "9"
+        MARKETING_VERSION: "1.2.0"
+        CURRENT_PROJECT_VERSION: "1"
         TARGETED_DEVICE_FAMILY: "1,2"           # iPhone + iPad
         SUPPORTS_MACCATALYST: NO
         ENABLE_PREVIEWS: YES
