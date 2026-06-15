@@ -29,16 +29,20 @@ public final class StubMatchService: MatchService, @unchecked Sendable {
     public func payload(for match: MatchHandle) async throws -> MatchPayload {
         throw Error.unavailable
     }
-    public func submit(_ move: Move, in match: MatchHandle) async throws {
+    public func submit(_ move: Move, fills: [String: String],
+                       in match: MatchHandle) async throws {
         throw Error.unavailable
     }
-    public func submitClosing(_ move: Move, in match: MatchHandle) async throws {
+    public func check(locks: [CoordWire], clears: [CoordWire],
+                      fills: [String: String], in match: MatchHandle) async throws {
         throw Error.unavailable
     }
-    public func pass(revealing cell: CoordWire, in match: MatchHandle) async throws {
+    public func pass(revealing cell: CoordWire, fills: [String: String],
+                     in match: MatchHandle) async throws {
         throw Error.unavailable
     }
-    public func signalDone(in match: MatchHandle, finalWinner: String?) async throws {
+    public func signalDone(fills: [String: String], in match: MatchHandle,
+                           finalWinner: String?) async throws {
         throw Error.unavailable
     }
     public func endMatch(handle: MatchHandle, winnerPlayerID: String) async throws {

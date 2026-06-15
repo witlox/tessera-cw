@@ -51,7 +51,9 @@ struct BoardView: View {
         let letter = state.effectiveLetter(coord, in: puzzle)
         let isSelected = state.selection?.origin == coord
         let inEntry = isInCurrentEntry(coord)
-        let isRevealed = state.revealed.contains(coord) || state.revealedByOpponent.contains(coord)
+        let isRevealed = state.revealed.contains(coord)
+            || state.revealedByOpponent.contains(coord)
+            || state.locked.contains(coord)
         let isWrong = wrongCells.contains(coord)
         ZStack {
             Rectangle()

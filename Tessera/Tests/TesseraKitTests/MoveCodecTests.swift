@@ -53,7 +53,7 @@ final class MoveCodecTests: XCTestCase {
                                currentPlayer: "p1")
         XCTAssertEqual(payload.currentTurnPlayer, "p1")
 
-        // After service flips currentPlayer (via pass or submitClosing), it's p2.
+        // After service flips currentPlayer (via pass or check), it's p2.
         payload = MatchPayload(config: config, players: players, createdAt: Date(),
                                currentPlayer: "p2")
         XCTAssertEqual(payload.currentTurnPlayer, "p2")

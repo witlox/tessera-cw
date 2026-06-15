@@ -74,27 +74,36 @@ public protocol MatchService {
     func payload(for match: MatchHandle) async throws -> MatchPayload
 
     /// Submit one filled cell within the active turn. Does NOT advance the
-    /// turn — only `pass` / `submitClosing` / `signalDone` do that. The
-    /// player keeps placing letters until they pass voluntarily, complete a
-    /// word correctly, or the shot clock expires.
-    func submit(_ move: Move, in match: MatchHandle) async throws
+    /// turn — only `pass` / `check` / `signalDone` do. `fills` is the full
+    /// post-placement snapshot so the wire payload stays a self-describing
+    /// truth (a failed Check needs to clear cells without rewriting the
+    /// move log, so we no longer derive `fills` by replaying moves).
+    func submit(_ move: Move, fills: [String: String],
+                in match: MatchHandle) async throws
 
-    /// Submit one filled cell AND end the turn in one shot. Used by the
-    /// auto-pass-on-word-complete path so the opponent is notified
-    /// immediately of the move that closed the word.
-    func submitClosing(_ move: Move, in match: MatchHandle) async throws
+    /// Verify the cells the player has placed in an entry and end the turn.
+    /// Caller computes the outcome locally (it has the solution): if the
+    /// entry is fully correct it passes the entry's cells in `locks`; if
+    /// any letter is wrong it passes those cells in `clears`. `fills` is
+    /// the post-Check snapshot (already with `clears` removed by the
+    /// caller). One operation, one turn boundary.
+    func check(locks: [CoordWire], clears: [CoordWire],
+               fills: [String: String], in match: MatchHandle) async throws
 
     /// Voluntarily pass without filling. Caller picks the cell to reveal —
     /// it has the local Puzzle and the current GameState, so it can pick an
     /// untouched correct cell deterministically. Both clients compute the
-    /// same candidate set from the seed + move log, so they agree.
-    func pass(revealing cell: CoordWire, in match: MatchHandle) async throws
+    /// same candidate set from the seed + state, so they agree. `fills`
+    /// captures whatever the player typed during their turn.
+    func pass(revealing cell: CoordWire, fills: [String: String],
+              in match: MatchHandle) async throws
 
     /// Mark the local player as "I'm done". When `finalWinner` is nil the
     /// turn is handed to the opponent (first-done case). When non-nil this
     /// is the second-done call — the match is ended with that winner ID
     /// and final `matchOutcome`s set in the same operation.
-    func signalDone(in match: MatchHandle, finalWinner: String?) async throws
+    func signalDone(fills: [String: String], in match: MatchHandle,
+                    finalWinner: String?) async throws
 
     /// End the turn-based match. Sets `matchOutcome` to .won on the
     /// participant whose `gamePlayerID` matches `winnerPlayerID` and .lost

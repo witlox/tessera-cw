@@ -16,8 +16,11 @@ final class AppModel {
 
     /// Live solo game, if one is in progress.
     var solo: SoloViewModel?
-    /// Live multiplayer match, if one is open.
-    var match: MatchViewModel?
+    /// All open multiplayer matches, sorted most-recently-active first by
+    /// the order we attached them. A single slot used to live here; the
+    /// home screen now lists every active match so the player can see at a
+    /// glance which games are waiting on them.
+    var matches: [MatchViewModel] = []
 
     let match_service: MatchService
 
@@ -104,19 +107,15 @@ final class AppModel {
         }
     }
 
-    /// After auth resolves, surface the local player's most recent
-    /// non-ended match on Home so the user doesn't have to re-open via a
-    /// notification or invite to see it. Cheap-and-correct: feed each
-    /// match ID through the same `handleNewMatch` pipeline the listener
-    /// uses; the existing duplicate-guard short-circuits if one is already
-    /// loaded, and the first match that attaches wins our single
-    /// `match` slot.
+    /// After auth resolves, surface the local player's open turn-based
+    /// matches on Home so the user doesn't have to re-open via a
+    /// notification or invite to see them. Each ID is fed through the
+    /// same `handleNewMatch` pipeline the listener uses; `handleNewMatch`
+    /// dedupes against `matches`, so re-running this is idempotent.
     private func restoreActiveMatches() async {
-        guard match == nil else { return }
         guard let ids = try? await match_service.loadActiveMatchIDs() else { return }
         for id in ids {
             await handleNewMatch(matchID: id)
-            if match != nil { break }
         }
     }
 
@@ -126,8 +125,8 @@ final class AppModel {
     /// player B (we accepted an invite) and the matchData already has the
     /// config player A seeded.
     func handleNewMatch(matchID: String) async {
-        // If a match is already in play for this ID, ignore duplicate events.
-        if let existing = match, existing.handle.id == matchID { return }
+        // If this match is already loaded, ignore the duplicate event.
+        if matches.contains(where: { $0.handle.id == matchID }) { return }
 
         let seedConfig: MatchConfig? = pendingMatchConfig.map { pc in
             MatchConfig(seed: UInt64.random(in: 1...UInt64.max),
@@ -150,10 +149,12 @@ final class AppModel {
                                     puzzle: puzzle, me: localPlayerID,
                                     payload: payload)
             vm.startListening()
-            self.match = vm
+            // Most-recently-attached lives at the top of the home list.
+            matches.insert(vm, at: 0)
         } catch {
-            corpusError = (error as? LocalizedError)?.errorDescription
-                ?? String(describing: error)
+            // Silent on the restore path — a stale active-match ID
+            // (match just ended remotely between loadMatches and load) is
+            // expected and shouldn't surface as a "Problem" banner.
         }
     }
 
@@ -185,8 +186,8 @@ final class AppModel {
         solo = nil
     }
 
-    func endMatch() {
-        match = nil
+    func endMatch(_ vm: MatchViewModel) {
+        matches.removeAll { $0 === vm }
     }
 
     /// Drives Game Center sign-in and mirrors the result into observable

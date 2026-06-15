@@ -172,23 +172,26 @@ public final class GameKitMatchService: NSObject, MatchService, GKLocalPlayerLis
         return sorted.map { $0.matchID }
     }
 
-    // MARK: - Submit / pass
+    // MARK: - Submit / check / pass
 
-    public func submit(_ move: Move, in handle: MatchHandle) async throws {
+    public func submit(_ move: Move, fills: [String: String],
+                       in handle: MatchHandle) async throws {
         let match = try await load(matchID: handle.id)
         let payload = try MoveCodec.decode(match.matchData ?? Data())
         let me = GKLocalPlayer.local.gamePlayerID
         let refreshed = mergeParticipants(into: payload.players, from: match.participants, me: me)
         let updated = payload.with(moves: payload.moves + [move],
-                                   players: refreshed)
+                                   players: refreshed,
+                                   fills: fills)
         let data = try MoveCodec.encode(updated)
         // Letters within a turn do NOT advance the turn — only an explicit
-        // pass (or shot-clock-driven pass) ends it. saveCurrentTurn persists
-        // the move log without notifying the opponent.
+        // Check, Pass, or signalDone does. saveCurrentTurn persists the
+        // snapshot without notifying the opponent.
         try await save(matchData: data, in: match, endTurn: false)
     }
 
-    public func submitClosing(_ move: Move, in handle: MatchHandle) async throws {
+    public func check(locks: [CoordWire], clears: [CoordWire],
+                      fills: [String: String], in handle: MatchHandle) async throws {
         let match = try await load(matchID: handle.id)
         let payload = try MoveCodec.decode(match.matchData ?? Data())
         let me = GKLocalPlayer.local.gamePlayerID
@@ -196,14 +199,24 @@ public final class GameKitMatchService: NSObject, MatchService, GKLocalPlayerLis
         guard let next = opponentID(in: match, players: refreshed, me: me) else {
             throw MatchError.opponentNotReady
         }
-        let updated = payload.with(moves: payload.moves + [move],
-                                   players: refreshed,
-                                   currentPlayer: next)
+        // Fold any newly-locked cells into the cumulative lockedCells set.
+        // Clears are reflected via the caller-supplied fills snapshot —
+        // we don't track them separately.
+        var lockedSet: [CoordWire] = payload.lockedCells
+        for wire in locks where !lockedSet.contains(wire) {
+            lockedSet.append(wire)
+        }
+        _ = clears  // reflected in fills; kept in the protocol for symmetry / future use
+        let updated = payload.with(players: refreshed,
+                                   currentPlayer: next,
+                                   fills: fills,
+                                   lockedCells: lockedSet)
         let data = try MoveCodec.encode(updated)
         try await save(matchData: data, in: match, endTurn: true)
     }
 
-    public func signalDone(in handle: MatchHandle, finalWinner: String?) async throws {
+    public func signalDone(fills: [String: String], in handle: MatchHandle,
+                           finalWinner: String?) async throws {
         let match = try await load(matchID: handle.id)
         let payload = try MoveCodec.decode(match.matchData ?? Data())
         let me = GKLocalPlayer.local.gamePlayerID
@@ -213,7 +226,8 @@ public final class GameKitMatchService: NSObject, MatchService, GKLocalPlayerLis
         }
         let updated = payload.with(doneSignals: payload.doneSignals + [me],
                                    players: refreshed,
-                                   currentPlayer: next)
+                                   currentPlayer: next,
+                                   fills: fills)
         let data = try MoveCodec.encode(updated)
         if let winner = finalWinner {
             for participant in match.participants {
@@ -251,7 +265,8 @@ public final class GameKitMatchService: NSObject, MatchService, GKLocalPlayerLis
                                             leaderboardIDs: [id.rawValue])
     }
 
-    public func pass(revealing cell: CoordWire, in handle: MatchHandle) async throws {
+    public func pass(revealing cell: CoordWire, fills: [String: String],
+                     in handle: MatchHandle) async throws {
         let match = try await load(matchID: handle.id)
         let payload = try MoveCodec.decode(match.matchData ?? Data())
         let me = GKLocalPlayer.local.gamePlayerID
@@ -262,7 +277,8 @@ public final class GameKitMatchService: NSObject, MatchService, GKLocalPlayerLis
         }
         let updated = payload.with(passReveals: payload.passReveals + [reveal],
                                    players: refreshed,
-                                   currentPlayer: next)
+                                   currentPlayer: next,
+                                   fills: fills)
         let data = try MoveCodec.encode(updated)
         try await save(matchData: data, in: match, endTurn: true)
     }

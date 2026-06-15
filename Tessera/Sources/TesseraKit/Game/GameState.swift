@@ -10,6 +10,10 @@ public struct GameState: Sendable, Codable, Equatable {
     public var revealed: Set<Coord>
     /// Cells the opponent's "reveal-on-pass" granted (multiplayer only).
     public var revealedByOpponent: Set<Coord>
+    /// Cells locked by a successful Check (multiplayer only). The letter at
+    /// a locked cell is the puzzle's solution and `place` / `clear` refuse
+    /// to touch it.
+    public var locked: Set<Coord>
     /// Whose entry is currently highlighted; the BoardView drives selection.
     public var selection: Selection?
     /// Wall-clock total play time, in seconds. Solo only; ignored in multiplayer.
@@ -18,10 +22,12 @@ public struct GameState: Sendable, Codable, Equatable {
     public init(fills: [Coord: Character] = [:],
                 revealed: Set<Coord> = [],
                 revealedByOpponent: Set<Coord> = [],
+                locked: Set<Coord> = [],
                 selection: Selection? = nil,
                 elapsedSeconds: Double = 0) {
         self.fills = fills; self.revealed = revealed
         self.revealedByOpponent = revealedByOpponent
+        self.locked = locked
         self.selection = selection; self.elapsedSeconds = elapsedSeconds
     }
 
@@ -37,7 +43,8 @@ public struct GameState: Sendable, Codable, Equatable {
 
     public func isComplete(_ puzzle: Puzzle) -> Bool {
         for (coord, correct) in puzzle.solution {
-            if revealed.contains(coord) || revealedByOpponent.contains(coord) { continue }
+            if revealed.contains(coord) || revealedByOpponent.contains(coord)
+                || locked.contains(coord) { continue }
             guard let f = fills[coord], f == correct else { return false }
         }
         return true
@@ -46,14 +53,16 @@ public struct GameState: Sendable, Codable, Equatable {
     public func wrongCells(_ puzzle: Puzzle) -> Set<Coord> {
         var bad: Set<Coord> = []
         for (coord, ch) in fills {
-            if revealed.contains(coord) || revealedByOpponent.contains(coord) { continue }
+            if revealed.contains(coord) || revealedByOpponent.contains(coord)
+                || locked.contains(coord) { continue }
             if puzzle.solution[coord] != ch { bad.insert(coord) }
         }
         return bad
     }
 
     public func effectiveLetter(_ coord: Coord, in puzzle: Puzzle) -> Character? {
-        if revealed.contains(coord) || revealedByOpponent.contains(coord) {
+        if revealed.contains(coord) || revealedByOpponent.contains(coord)
+            || locked.contains(coord) {
             return puzzle.solution[coord]
         }
         return fills[coord]
@@ -63,12 +72,14 @@ public struct GameState: Sendable, Codable, Equatable {
 
     public mutating func place(_ letter: Character, at coord: Coord, in puzzle: Puzzle) {
         guard puzzle.solution[coord] != nil else { return }
-        if revealed.contains(coord) || revealedByOpponent.contains(coord) { return }
+        if revealed.contains(coord) || revealedByOpponent.contains(coord)
+            || locked.contains(coord) { return }
         fills[coord] = letter
     }
 
     public mutating func clear(at coord: Coord) {
-        if revealed.contains(coord) || revealedByOpponent.contains(coord) { return }
+        if revealed.contains(coord) || revealedByOpponent.contains(coord)
+            || locked.contains(coord) { return }
         fills.removeValue(forKey: coord)
     }
 
@@ -89,6 +100,7 @@ public struct GameState: Sendable, Codable, Equatable {
     public func pickUntouchedCell(_ puzzle: Puzzle, rng: inout SeededRNG) -> Coord? {
         let untouched = puzzle.solution.keys.filter { c in
             fills[c] == nil && !revealed.contains(c) && !revealedByOpponent.contains(c)
+                && !locked.contains(c)
         }
         return untouched.isEmpty ? nil : untouched.randomElement(using: &rng)
     }
@@ -96,7 +108,7 @@ public struct GameState: Sendable, Codable, Equatable {
     // MARK: - Codable (custom; Coord-keyed dicts and Character don't auto-synthesise)
 
     private enum CK: String, CodingKey {
-        case fills, revealed, revealedByOpponent, selection, elapsedSeconds
+        case fills, revealed, revealedByOpponent, locked, selection, elapsedSeconds
     }
 
     public init(from decoder: Decoder) throws {
@@ -112,6 +124,10 @@ public struct GameState: Sendable, Codable, Equatable {
                               .compactMap(Coord.parse))
         self.revealedByOpponent = Set(try c.decode([String].self, forKey: .revealedByOpponent)
                               .compactMap(Coord.parse))
+        // Backwards compat — solo saves from before locked existed have no
+        // such key; default to empty.
+        self.locked = Set((try? c.decode([String].self, forKey: .locked))?
+                              .compactMap(Coord.parse) ?? [])
         self.selection = try c.decodeIfPresent(Selection.self, forKey: .selection)
         self.elapsedSeconds = try c.decode(Double.self, forKey: .elapsedSeconds)
     }
@@ -119,21 +135,16 @@ public struct GameState: Sendable, Codable, Equatable {
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CK.self)
         var fillsRaw: [String: String] = [:]
-        for (coord, ch) in fills { fillsRaw[coord.key] = String(ch) }
+        for (coord, ch) in fills { fillsRaw[coord.wireKey] = String(ch) }
         try c.encode(fillsRaw, forKey: .fills)
-        try c.encode(revealed.map(\.key).sorted(), forKey: .revealed)
-        try c.encode(revealedByOpponent.map(\.key).sorted(), forKey: .revealedByOpponent)
+        try c.encode(revealed.map(\.wireKey).sorted(), forKey: .revealed)
+        try c.encode(revealedByOpponent.map(\.wireKey).sorted(), forKey: .revealedByOpponent)
+        try c.encode(locked.map(\.wireKey).sorted(), forKey: .locked)
         try c.encodeIfPresent(selection, forKey: .selection)
         try c.encode(elapsedSeconds, forKey: .elapsedSeconds)
     }
 }
 
-extension Coord {
-    fileprivate var key: String { "\(r),\(c)" }
-    fileprivate static func parse(_ s: String) -> Coord? {
-        let parts = s.split(separator: ",")
-        guard parts.count == 2, let r = Int(parts[0]), let c = Int(parts[1]) else { return nil }
-        return Coord(r, c)
-    }
-}
+// `Coord.parse` / `Coord.wireKey` live in MoveCodec.swift — the wire
+// payload uses the same encoding so both files share a single helper.
 

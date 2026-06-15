@@ -104,9 +104,9 @@ struct MultiplayerView: View {
             #endif
             // When AppModel attaches the new match, dismiss the matchmaker
             // sheet and this whole MultiplayerView — we want the user to
-            // land in MatchPlayView via Home's "Active match" card.
-            .onChange(of: model.match != nil) { _, hasMatch in
-                if hasMatch {
+            // land in MatchPlayView via the Home list.
+            .onChange(of: model.matches.count) { _, count in
+                if count > 0 {
                     showMatchmaker = false
                     dismiss()
                 }

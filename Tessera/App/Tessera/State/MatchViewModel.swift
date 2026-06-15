@@ -57,48 +57,82 @@ final class MatchViewModel {
     func submitLetter(_ letter: Character, at coord: Coord, deadline: Date) async throws {
         let move = Move(by: me, cell: CoordWire(coord), letter: letter,
                         atTurnDeadline: deadline)
-        // Build a hypothetical post-placement state so we can decide whether
-        // the letter completes the puzzle (→ win) or completes a single
-        // entry correctly (→ auto-pass).
         var after = state
         after.place(letter, at: coord, in: puzzle)
 
-        // 1) Whole puzzle complete? Local optimistic apply, submit, then end.
+        // Whole puzzle complete? Local optimistic apply, submit, then end.
+        // (No more auto-pass-on-word-complete — the player commits via the
+        // explicit Check button or hands off via Pass.)
         if after.isComplete(puzzle), !me.isEmpty {
-            try await service.submit(move, in: handle)
+            try await service.submit(move, fills: fillsSnapshot(after.fills), in: handle)
             state = after
             didWin = true
             try? await service.endMatch(handle: handle, winnerPlayerID: me)
             return
         }
 
-        // 2) An entry just transitioned from "not complete" to "complete and
-        // all correct" — auto-pass to the opponent.
-        if entryJustCompletedCorrectly(before: state, after: after, at: coord) != nil {
-            try await service.submitClosing(move, in: handle)
-            state = after
-            await refreshPayloadAfterTurnEnd()
-            return
-        }
-
-        // 3) Ordinary letter — saveCurrentTurn, keep playing.
-        try await service.submit(move, in: handle)
+        // Ordinary letter — saveCurrentTurn, keep playing.
+        try await service.submit(move, fills: fillsSnapshot(after.fills), in: handle)
         state = after
     }
 
-    private func entryJustCompletedCorrectly(before: GameState, after: GameState,
-                                             at coord: Coord) -> PlacedEntry? {
-        for entry in puzzle.placed where entry.cells.contains(coord) {
-            let wasCompleteBefore = entry.cells.allSatisfy { c in
-                puzzle.solution[c] == before.effectiveLetter(c, in: puzzle)
-            }
-            if wasCompleteBefore { continue }
-            let isCompleteAfter = entry.cells.allSatisfy { c in
-                puzzle.solution[c] == after.effectiveLetter(c, in: puzzle)
-            }
-            if isCompleteAfter { return entry }
+    /// Verify the entry that contains `coord` (and matches `orientation`).
+    /// All cells correct → lock the whole entry. Any wrong letter →
+    /// clear the wrong cells (correct ones stay). Either outcome ends
+    /// the turn.
+    ///
+    /// Returns `true` when the check passed (the player's words were all
+    /// right), `false` when at least one cell was wrong / empty. The view
+    /// layer can surface a flash or haptic off the return value.
+    @discardableResult
+    func checkEntry(_ entry: PlacedEntry) async throws -> Bool {
+        var after = state
+        let truth = puzzle.solution
+        // Cells in the entry that aren't already locked, revealed by us,
+        // or revealed by the opponent — those are the ones we judge.
+        let editable = entry.cells.filter { c in
+            !after.locked.contains(c)
+                && !after.revealed.contains(c)
+                && !after.revealedByOpponent.contains(c)
         }
-        return nil
+        // Wrong = currently filled with a non-matching letter, or empty.
+        // Either way, an "all correct" entry must have NO wrong cells.
+        let wrong = editable.filter { c in
+            guard let filled = after.fills[c] else { return true }
+            return truth[c] != filled
+        }
+        if wrong.isEmpty {
+            // PASS — lock the whole entry. Cells already locked stay
+            // locked; new locks are the rest of the entry's cells.
+            let newLocks = entry.cells.filter { !after.locked.contains($0) }
+            for c in newLocks { after.locked.insert(c) }
+            try await service.check(
+                locks: newLocks.map(CoordWire.init),
+                clears: [],
+                fills: fillsSnapshot(after.fills),
+                in: handle)
+            state = after
+            await refreshPayloadAfterTurnEnd()
+            return true
+        } else {
+            // FAIL — clear only the wrong cells; correct user placements stay.
+            for c in wrong { after.fills.removeValue(forKey: c) }
+            try await service.check(
+                locks: [],
+                clears: wrong.map(CoordWire.init),
+                fills: fillsSnapshot(after.fills),
+                in: handle)
+            state = after
+            await refreshPayloadAfterTurnEnd()
+            return false
+        }
+    }
+
+    /// Encode the in-memory `fills` map as the wire snapshot.
+    private func fillsSnapshot(_ map: [Coord: Character]) -> [String: String] {
+        var out: [String: String] = [:]
+        for (coord, ch) in map { out[coord.wireKey] = String(ch) }
+        return out
     }
 
     /// "I'm done" — irrevocable. If we're the second to signal, compute the
@@ -106,6 +140,7 @@ final class MatchViewModel {
     /// the match in the same network call. Otherwise just hand the turn
     /// over; opponent plays freely until they also signal done.
     func signalDone() async throws {
+        let snapshot = fillsSnapshot(state.fills)
         if opponentSignalledDone {
             let myCount = payload.correctLetterCount(playerID: me, puzzle: puzzle)
             let opp = payload.other(than: me) ?? ""
@@ -119,11 +154,11 @@ final class MatchViewModel {
                 winner = opp
             }
             didWin = (winner == me)
-            try await service.signalDone(in: handle, finalWinner: winner)
+            try await service.signalDone(fills: snapshot, in: handle, finalWinner: winner)
             // Match ended — the inbound `.matchEnded` event flips `didEnd`
             // and the view routes home; no payload refresh needed.
         } else {
-            try await service.signalDone(in: handle, finalWinner: nil)
+            try await service.signalDone(fills: snapshot, in: handle, finalWinner: nil)
             await refreshPayloadAfterTurnEnd()
         }
     }
@@ -135,14 +170,20 @@ final class MatchViewModel {
     func pass() async throws {
         var rng = SeededRNG(handle.config.seed &+ UInt64(payload.passReveals.count) &+ 17)
         guard let coord = state.pickUntouchedCell(puzzle, rng: &rng) else {
-            // Nothing left to reveal — still hand turn over.
-            try await service.pass(revealing: CoordWire(0, 0), in: handle)
+            // Nothing left to reveal — still hand turn over with our snapshot.
+            try await service.pass(revealing: CoordWire(0, 0),
+                                   fills: fillsSnapshot(state.fills),
+                                   in: handle)
             await refreshPayloadAfterTurnEnd()
             return
         }
-        try await service.pass(revealing: CoordWire(coord), in: handle)
-        state.revealedByOpponent.insert(coord)
-        if let truth = puzzle.solution[coord] { state.fills[coord] = truth }
+        var after = state
+        after.revealedByOpponent.insert(coord)
+        if let truth = puzzle.solution[coord] { after.fills[coord] = truth }
+        try await service.pass(revealing: CoordWire(coord),
+                               fills: fillsSnapshot(after.fills),
+                               in: handle)
+        state = after
         await refreshPayloadAfterTurnEnd()
     }
 

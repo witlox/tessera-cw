@@ -57,6 +57,14 @@ struct MatchPlayView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
+                    Task { await checkSelected() }
+                } label: {
+                    Label("Check", systemImage: "checkmark.seal")
+                }
+                .disabled(!checkEnabled)
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button {
                     Task { await passTurn() }
                 } label: {
                     Label("Pass", systemImage: "forward.end")
@@ -114,7 +122,7 @@ struct MatchPlayView: View {
                 if match.state.isComplete(match.puzzle) || bothDone {
                     model.recordMultiplayerCompletion(didWin: match.didWin)
                 }
-                model.endMatch()
+                model.endMatch(match)
                 dismiss()
             }
         } message: {
@@ -132,6 +140,13 @@ struct MatchPlayView: View {
 
     private var keyboardEnabled: Bool {
         match.isMyTurn && !submitting && !match.iSignalledDone
+    }
+
+    /// Check needs a selection that maps to a placed entry — otherwise
+    /// there's nothing to verify.
+    private var checkEnabled: Bool {
+        guard match.isMyTurn, !submitting, !match.iSignalledDone else { return false }
+        return currentClue() != nil
     }
 
     private var statusBar: some View {
@@ -168,9 +183,21 @@ struct MatchPlayView: View {
 
     private func startClock() {
         clock.onExpire = { @MainActor in
-            Task { await passTurn() }
+            Task { await timerExpired() }
         }
         clock.start()
+    }
+
+    /// Shot clock expired: auto-Check the currently selected entry. If
+    /// nothing is selected (or the selection doesn't map to a placed
+    /// entry) fall back to Pass so the turn still hands off.
+    private func timerExpired() async {
+        guard match.isMyTurn, !match.iSignalledDone else { return }
+        if currentClue() != nil {
+            await checkSelected()
+        } else {
+            await passTurn()
+        }
     }
 
     private func currentClue() -> PlacedEntry? {
@@ -209,6 +236,20 @@ struct MatchPlayView: View {
         defer { submitting = false }
         do {
             try await match.pass()
+        } catch {
+            self.error = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+            if match.isMyTurn { startClock() }
+        }
+    }
+
+    private func checkSelected() async {
+        guard match.isMyTurn, !submitting, !match.iSignalledDone else { return }
+        guard let entry = currentClue() else { return }
+        submitting = true
+        clock.stop()
+        defer { submitting = false }
+        do {
+            _ = try await match.checkEntry(entry)
         } catch {
             self.error = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
             if match.isMyTurn { startClock() }

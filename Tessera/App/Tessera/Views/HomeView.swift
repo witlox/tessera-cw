@@ -25,12 +25,14 @@ struct HomeView: View {
                 }
             }
 
-            if let match = model.match {
-                Section("Active match") {
-                    NavigationLink {
-                        MatchPlayView(match: match)
-                    } label: {
-                        MatchCard(match: match)
+            if !model.matches.isEmpty {
+                Section("Active matches") {
+                    ForEach(model.matches, id: \.handle.id) { match in
+                        NavigationLink {
+                            MatchPlayView(match: match)
+                        } label: {
+                            MatchCard(match: match)
+                        }
                     }
                 }
             }
