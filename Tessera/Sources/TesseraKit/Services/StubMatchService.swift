@@ -45,7 +45,12 @@ public final class StubMatchService: MatchService, @unchecked Sendable {
                            finalWinner: String?) async throws {
         throw Error.unavailable
     }
-    public func endMatch(handle: MatchHandle, winnerPlayerID: String) async throws {
+    public func endMatch(move: Move?, locks: [CoordWire],
+                         fills: [String: String], winnerPlayerID: String,
+                         in match: MatchHandle) async throws {
+        throw Error.unavailable
+    }
+    public func quit(handle: MatchHandle) async throws {
         throw Error.unavailable
     }
     public func reportLeaderboard(score: Int, to id: LeaderboardID) async throws {

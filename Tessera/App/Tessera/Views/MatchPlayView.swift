@@ -15,6 +15,7 @@ struct MatchPlayView: View {
     @State private var submitting = false
     @State private var showCompletion = false
     @State private var confirmDone = false
+    @State private var confirmQuit = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -74,7 +75,8 @@ struct MatchPlayView: View {
             ToolbarItem(placement: .secondaryAction) {
                 MatchOverflowMenu(
                     match: match,
-                    onIAmDone: { confirmDone = true }
+                    onIAmDone: { confirmDone = true },
+                    onQuit: { confirmQuit = true }
                 )
             }
         }
@@ -86,6 +88,18 @@ struct MatchPlayView: View {
         ) {
             Button("I'm done", role: .destructive) {
                 Task { await signalDone() }
+            }
+            Button("Cancel", role: .cancel) {}
+        }
+        .confirmationDialog(
+            "Quit this match? You won't be able to resume — the other player sees you as having left.",
+            isPresented: $confirmQuit, titleVisibility: .visible
+        ) {
+            Button("Quit match", role: .destructive) {
+                Task {
+                    await model.quitMatch(match)
+                    dismiss()
+                }
             }
             Button("Cancel", role: .cancel) {}
         }
@@ -215,6 +229,23 @@ struct MatchPlayView: View {
 
     // MARK: - Actions
 
+    /// Centralised error handling for every multiplayer write. When the
+    /// match has already ended on the server (our `matchAlreadyEnded`
+    /// precheck, or the raw `GKError 5003` the server returns when the
+    /// local cache hasn't yet seen the transition), flip the VM into
+    /// "ended" so the completion alert appears instead of a raw
+    /// GKErrorDomain message — the user shouldn't have to parse a
+    /// Dutch/English mix of NSError userInfo to understand the game's
+    /// over.
+    private func handleActionError(_ error: Error) {
+        if match.isMatchEndedError(error) {
+            match.markEnded()
+            return
+        }
+        self.error = (error as? LocalizedError)?.errorDescription
+            ?? String(describing: error)
+    }
+
     private func submit(letter: Character) async {
         guard match.isMyTurn, !submitting, let sel = selection else { return }
         let coord = sel.origin
@@ -225,7 +256,7 @@ struct MatchPlayView: View {
         do {
             try await match.submitLetter(letter, at: coord, deadline: Date().addingTimeInterval(60))
         } catch {
-            self.error = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+            handleActionError(error)
         }
     }
 
@@ -237,7 +268,7 @@ struct MatchPlayView: View {
         do {
             try await match.pass()
         } catch {
-            self.error = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+            handleActionError(error)
             if match.isMyTurn { startClock() }
         }
     }
@@ -251,7 +282,7 @@ struct MatchPlayView: View {
         do {
             _ = try await match.checkEntry(entry)
         } catch {
-            self.error = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+            handleActionError(error)
             if match.isMyTurn { startClock() }
         }
     }
@@ -264,7 +295,7 @@ struct MatchPlayView: View {
         do {
             try await match.signalDone()
         } catch {
-            self.error = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+            handleActionError(error)
         }
     }
 }
@@ -276,6 +307,7 @@ struct MatchPlayView: View {
 private struct MatchOverflowMenu: View {
     @Bindable var match: MatchViewModel
     let onIAmDone: () -> Void
+    let onQuit: () -> Void
 
     var body: some View {
         Menu {
@@ -290,6 +322,9 @@ private struct MatchOverflowMenu: View {
                 Label("I'm done", systemImage: "flag.checkered")
             }
             .disabled(match.iSignalledDone)
+            Button(role: .destructive, action: onQuit) {
+                Label("Quit match", systemImage: "rectangle.portrait.and.arrow.right")
+            }
         } label: {
             Label("More", systemImage: "ellipsis.circle")
         }

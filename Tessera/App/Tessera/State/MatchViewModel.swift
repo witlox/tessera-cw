@@ -60,14 +60,18 @@ final class MatchViewModel {
         var after = state
         after.place(letter, at: coord, in: puzzle)
 
-        // Whole puzzle complete? Local optimistic apply, submit, then end.
-        // (No more auto-pass-on-word-complete — the player commits via the
-        // explicit Check button or hands off via Pass.)
+        // Whole puzzle complete? Use the atomic terminating write that
+        // bundles the move + endMatchInTurn into ONE GameKit call. The
+        // previous save-current-turn-then-end-match pair raced against
+        // the server and produced GKError 5003 (`current-turn-number
+        // value: -1`) when the second write hit before the first had
+        // propagated.
         if after.isComplete(puzzle), !me.isEmpty {
-            try await service.submit(move, fills: fillsSnapshot(after.fills), in: handle)
-            state = after
             didWin = true
-            try? await service.endMatch(handle: handle, winnerPlayerID: me)
+            try await service.endMatch(move: move, locks: [],
+                                       fills: fillsSnapshot(after.fills),
+                                       winnerPlayerID: me, in: handle)
+            state = after
             return
         }
 
@@ -106,13 +110,26 @@ final class MatchViewModel {
             // locked; new locks are the rest of the entry's cells.
             let newLocks = entry.cells.filter { !after.locked.contains($0) }
             for c in newLocks { after.locked.insert(c) }
+            // If this Check just finished every cell on the board, end
+            // the match atomically — same single-write contract as
+            // `submitLetter`'s puzzle-complete branch.
+            if after.isComplete(puzzle), !me.isEmpty {
+                didWin = true
+                try await service.endMatch(
+                    move: nil,
+                    locks: newLocks.map(CoordWire.init),
+                    fills: fillsSnapshot(after.fills),
+                    winnerPlayerID: me, in: handle)
+                state = after
+                return true
+            }
             try await service.check(
                 locks: newLocks.map(CoordWire.init),
                 clears: [],
                 fills: fillsSnapshot(after.fills),
                 in: handle)
             state = after
-            await refreshPayloadAfterTurnEnd()
+            optimisticallyHandOffTurn()
             return true
         } else {
             // FAIL — clear only the wrong cells; correct user placements stay.
@@ -123,7 +140,7 @@ final class MatchViewModel {
                 fills: fillsSnapshot(after.fills),
                 in: handle)
             state = after
-            await refreshPayloadAfterTurnEnd()
+            optimisticallyHandOffTurn()
             return false
         }
     }
@@ -159,7 +176,7 @@ final class MatchViewModel {
             // and the view routes home; no payload refresh needed.
         } else {
             try await service.signalDone(fills: snapshot, in: handle, finalWinner: nil)
-            await refreshPayloadAfterTurnEnd()
+            optimisticallyHandOffTurn()
         }
     }
 
@@ -174,7 +191,7 @@ final class MatchViewModel {
             try await service.pass(revealing: CoordWire(0, 0),
                                    fills: fillsSnapshot(state.fills),
                                    in: handle)
-            await refreshPayloadAfterTurnEnd()
+            optimisticallyHandOffTurn()
             return
         }
         var after = state
@@ -184,51 +201,51 @@ final class MatchViewModel {
                                fills: fillsSnapshot(after.fills),
                                in: handle)
         state = after
-        await refreshPayloadAfterTurnEnd()
+        optimisticallyHandOffTurn()
     }
 
-    /// Pull the canonical payload from the service so `isMyTurn` flips
-    /// immediately after a turn-ending write. The service-side
-    /// `payload(for:)` reconciles against GameKit's `currentParticipant`,
-    /// folds in any newly-bound opponent ID, and corrects a stale
-    /// `currentPlayer` baked in by a previous write made before the
-    /// opponent's `GKPlayer` was resolved. Without this, our local payload
-    /// still says it's our turn after our own endTurn and the UI lets the
-    /// user tap into a `GKError 23 / GKServerStatusCode 5102` rejection.
-    private func refreshPayloadAfterTurnEnd() async {
-        if let fresh = try? await service.payload(for: handle) {
-            self.payload = fresh
-        }
+    /// Flip the local `currentPlayer` to the opponent immediately after a
+    /// successful turn-ending write. Without this the UI relied on a
+    /// follow-up `payload(for:)` reload to flip `isMyTurn`, but GameKit's
+    /// local `GKTurnBasedMatch.load(withID:)` cache occasionally returned
+    /// the stale pre-endTurn snapshot — leaving `isMyTurn=true` and
+    /// letting the player keep entering letters until the server
+    /// eventually rejected one with a turn-state error. The wire payload
+    /// we just encoded already names the opponent as `currentPlayer`, so
+    /// adopting it locally just matches what's now on the server.
+    private func optimisticallyHandOffTurn() {
+        guard let opp = payload.other(than: me) else { return }
+        payload = payload.with(currentPlayer: opp)
     }
 
-    /// Replay payload to refresh state after an inbound event.
+    /// Replay payload to refresh state after an inbound event. Called by
+    /// `AppModel` when it dispatches an inbound `.turnReceived` to the
+    /// matching view-model.
     func refresh(payload: MatchPayload) {
         self.payload = payload
         self.state = payload.gameState(for: puzzle)
     }
 
-    /// Subscribe to `service.inbound`. The listener-fed `.turnReceived`
-    /// event carries the freshly-decoded payload from GameKit's
-    /// authoritative `matchData`, so we apply it directly — avoiding a
-    /// `GKTurnBasedMatch.load(withID:)` round trip that on TestFlight
-    /// sometimes returned a stale snapshot and made the opponent's latest
-    /// moves look like they never arrived. `.matchEnded` falls back to a
-    /// reload (the listener doesn't provide a payload in the
-    /// `matchEnded` path) and flips `didEnd` so the view routes home.
-    func startListening() {
-        Task { [service, handle, weak self] in
-            for await event in service.inbound {
-                guard let self else { break }
-                switch event {
-                case .turnReceived(let payload):
-                    await MainActor.run { self.refresh(payload: payload) }
-                case .matchEnded:
-                    if let fresh = try? await service.payload(for: handle) {
-                        await MainActor.run { self.refresh(payload: fresh) }
-                    }
-                    await MainActor.run { self.didEnd = true }
-                }
-            }
-        }
+    /// Called by `AppModel` when an inbound `.matchEnded` event names
+    /// this match. The view's `.didEnd` watcher then routes home.
+    func markEnded() {
+        didEnd = true
+    }
+
+    /// True when an error from a service write came back because the
+    /// match had already ended on the server — either via our local
+    /// `match.status == .ended` precheck, or the raw `GKError 5003 /
+    /// current-turn-number value: -1` the server returns when the local
+    /// `GKTurnBasedMatch` cache hasn't yet seen the transition. The view
+    /// uses this to route home instead of surfacing a raw GKErrorDomain
+    /// alert that confuses the user.
+    func isMatchEndedError(_ error: Error) -> Bool {
+        #if canImport(GameKit)
+        if let me = error as? GameKitMatchService.MatchError,
+           me == .matchAlreadyEnded { return true }
+        #endif
+        let desc = String(describing: error)
+        return desc.contains("current-turn-number value: -1")
+            || desc.contains("GKServerStatusCode=5003")
     }
 }

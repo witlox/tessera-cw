@@ -244,16 +244,69 @@ public final class GameKitMatchService: NSObject, MatchService, GKLocalPlayerLis
         }
     }
 
-    public func endMatch(handle: MatchHandle, winnerPlayerID: String) async throws {
+    /// Atomic terminating write — folds the winning move (if any) and any
+    /// new locks into the freshly-loaded payload, sets participant
+    /// outcomes, and ends the match in a SINGLE `endMatchInTurn` call.
+    /// Replaces the previous save-current-turn-then-end-match pair, which
+    /// could race against the server and produce GKError 5003 /
+    /// `current-turn-number value: -1` when the second write hit before
+    /// the first had propagated.
+    public func endMatch(move: Move?, locks: [CoordWire],
+                         fills: [String: String], winnerPlayerID: String,
+                         in handle: MatchHandle) async throws {
         let match = try await load(matchID: handle.id)
+        if match.status == .ended { return }
+        let payload = try MoveCodec.decode(match.matchData ?? Data())
+        let me = GKLocalPlayer.local.gamePlayerID
+        let refreshed = mergeParticipants(into: payload.players,
+                                          from: match.participants, me: me)
+        var lockedSet: [CoordWire] = payload.lockedCells
+        for wire in locks where !lockedSet.contains(wire) {
+            lockedSet.append(wire)
+        }
+        let appended = move.map { payload.moves + [$0] } ?? payload.moves
+        let updated = payload.with(moves: appended,
+                                   players: refreshed,
+                                   fills: fills,
+                                   lockedCells: lockedSet)
+        let data = try MoveCodec.encode(updated)
         for participant in match.participants {
             guard let pid = participant.player?.gamePlayerID else { continue }
             participant.matchOutcome = (pid == winnerPlayerID) ? .won : .lost
         }
-        let data = match.matchData ?? Data()
         try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
             match.endMatchInTurn(withMatch: data) { error in
                 if let error { c.resume(throwing: error) } else { c.resume() }
+            }
+        }
+    }
+
+    public func quit(handle: MatchHandle) async throws {
+        let match = try await load(matchID: handle.id)
+        if match.status == .ended { return }
+        let me = GKLocalPlayer.local.gamePlayerID
+        // GameKit splits "quit" by turn ownership: out-of-turn just marks
+        // our outcome and lets the opponent keep playing; in-turn requires
+        // we name the next participant so the match can advance.
+        let myTurn = match.currentParticipant?.player?.gamePlayerID == me
+        if myTurn {
+            let nextParticipants = match.participants.filter {
+                $0 !== match.currentParticipant
+            }
+            let data = match.matchData ?? Data()
+            try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
+                match.participantQuitInTurn(with: .quit,
+                                            nextParticipants: nextParticipants,
+                                            turnTimeout: turnTimeout,
+                                            match: data) { error in
+                    if let error { c.resume(throwing: error) } else { c.resume() }
+                }
+            }
+        } else {
+            try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
+                match.participantQuitOutOfTurn(with: .quit) { error in
+                    if let error { c.resume(throwing: error) } else { c.resume() }
+                }
             }
         }
     }
@@ -305,19 +358,22 @@ public final class GameKitMatchService: NSObject, MatchService, GKLocalPlayerLis
         if let data = match.matchData, !data.isEmpty,
            let raw = try? MoveCodec.decode(data) {
             let reconciled = reconcile(payload: raw, with: match)
-            continuation?.yield(.turnReceived(reconciled))
+            continuation?.yield(.turnReceived(matchID: match.matchID,
+                                              reconciled))
         }
         if match.status == .ended {
             let winner = match.participants.first { $0.matchOutcome == .won }?
                 .player?.gamePlayerID
-            continuation?.yield(.matchEnded(winner: winner))
+            continuation?.yield(.matchEnded(matchID: match.matchID,
+                                            winner: winner))
         }
     }
 
     public func player(_ player: GKPlayer, matchEnded match: GKTurnBasedMatch) {
         let winner = match.participants.first { $0.matchOutcome == .won }?
             .player?.gamePlayerID
-        continuation?.yield(.matchEnded(winner: winner))
+        continuation?.yield(.matchEnded(matchID: match.matchID,
+                                        winner: winner))
     }
 
     // MARK: - Match lookup helpers
@@ -400,6 +456,15 @@ public final class GameKitMatchService: NSObject, MatchService, GKLocalPlayerLis
 
     private func save(matchData data: Data, in match: GKTurnBasedMatch,
                       endTurn: Bool) async throws {
+        // If the match already ended remotely (opponent won, opponent
+        // quit, or both players signalled done), every write below
+        // would be rejected by the server with GKError 5003 /
+        // `current-turn-number value: -1 violated constraint`. Catch
+        // the dead match locally so the UI can surface a clean message
+        // and route home, rather than showing a raw GKErrorDomain alert.
+        if match.status == .ended {
+            throw MatchError.matchAlreadyEnded
+        }
         // GameKit rejects both saveCurrentTurn and endTurn with GKError 23 /
         // GKServerStatusCode 5102 ("Not your turn") when the caller isn't the
         // current participant server-side. Catch the desync locally so the
@@ -444,6 +509,7 @@ public final class GameKitMatchService: NSObject, MatchService, GKLocalPlayerLis
         case notSeeded
         case notMyTurn
         case opponentNotReady
+        case matchAlreadyEnded
         public var errorDescription: String? {
             switch self {
             case .notAuthenticated:
@@ -456,6 +522,8 @@ public final class GameKitMatchService: NSObject, MatchService, GKLocalPlayerLis
                 return "It’s not your turn anymore — refreshing…"
             case .opponentNotReady:
                 return "Waiting for the other player to join. Try again in a moment."
+            case .matchAlreadyEnded:
+                return "This match has already ended. Returning to home…"
             }
         }
     }

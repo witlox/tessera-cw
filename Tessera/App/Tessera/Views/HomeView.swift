@@ -7,8 +7,12 @@ struct HomeView: View {
     @State private var showingMultiplayer = false
     @State private var showingLeaderboards = false
     @State private var confirmDiscardSolo = false
+    @State private var matchToQuit: MatchViewModel?
 
     var body: some View {
+        // Bindable so the matchError banner clears cleanly when the user
+        // dismisses it.
+        @Bindable var model = model
         List {
             if let solo = model.solo {
                 Section("Solo in progress") {
@@ -26,14 +30,36 @@ struct HomeView: View {
             }
 
             if !model.matches.isEmpty {
-                Section("Active matches") {
+                Section {
                     ForEach(model.matches, id: \.handle.id) { match in
                         NavigationLink {
                             MatchPlayView(match: match)
                         } label: {
                             MatchCard(match: match)
                         }
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            Button(role: .destructive) {
+                                matchToQuit = match
+                            } label: {
+                                Label("Quit", systemImage: "rectangle.portrait.and.arrow.right")
+                            }
+                        }
                     }
+                } header: {
+                    HStack {
+                        Text("Active matches")
+                        Spacer()
+                        Button {
+                            Task { await model.refreshMatches() }
+                        } label: {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.footnote.weight(.semibold))
+                        }
+                        .accessibilityLabel("Refresh matches")
+                    }
+                } footer: {
+                    Text("Swipe a match to quit it — use this if a game is stuck in a corrupted state.")
+                        .font(.footnote)
                 }
             }
 
@@ -99,6 +125,30 @@ struct HomeView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Your in-progress puzzle will be lost.")
+        }
+        .confirmationDialog(
+            "Quit this match? You won't be able to resume — the other player sees you as having left.",
+            isPresented: Binding(
+                get: { matchToQuit != nil },
+                set: { if !$0 { matchToQuit = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Quit match", role: .destructive) {
+                if let vm = matchToQuit {
+                    Task { await model.quitMatch(vm) }
+                }
+                matchToQuit = nil
+            }
+            Button("Cancel", role: .cancel) { matchToQuit = nil }
+        }
+        .alert("Multiplayer", isPresented: Binding(
+            get: { model.matchError != nil },
+            set: { if !$0 { model.matchError = nil } }
+        )) {
+            Button("OK") { model.matchError = nil }
+        } message: {
+            Text(model.matchError ?? "")
         }
     }
 }

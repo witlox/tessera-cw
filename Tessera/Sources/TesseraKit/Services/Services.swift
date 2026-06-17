@@ -105,12 +105,25 @@ public protocol MatchService {
     func signalDone(fills: [String: String], in match: MatchHandle,
                     finalWinner: String?) async throws
 
-    /// End the turn-based match. Sets `matchOutcome` to .won on the
-    /// participant whose `gamePlayerID` matches `winnerPlayerID` and .lost
-    /// on everyone else, then writes final matchData and closes the match.
-    /// Called by `MatchViewModel` when the winning move just completed the
-    /// puzzle. The other client will see `.matchEnded` via inbound.
-    func endMatch(handle: MatchHandle, winnerPlayerID: String) async throws
+    /// End the turn-based match atomically with the winning move folded in.
+    /// `move` is optional — when the puzzle is completed by a Check (which
+    /// doesn't add a Move), pass nil. `locks` carries any cells the same
+    /// operation should lock (the Check's entry). `fills` is the final
+    /// board snapshot. Sets `matchOutcome` to .won on the
+    /// `winnerPlayerID` participant and .lost on everyone else, then
+    /// writes final matchData and closes the match — ONE GameKit write,
+    /// no save-then-end race that produced GKError 5003 / `current-turn-
+    /// number value: -1` when both writes hit the server back-to-back.
+    func endMatch(move: Move?, locks: [CoordWire],
+                  fills: [String: String], winnerPlayerID: String,
+                  in match: MatchHandle) async throws
+
+    /// Permanently leave a match without finishing it. Used to recover
+    /// from corrupted state on the home screen (and from the in-match
+    /// overflow). Sets the local participant's `matchOutcome` to `.quit`
+    /// and ends the match for the local player; the other client sees a
+    /// `.matchEnded` event with the local player as loser.
+    func quit(handle: MatchHandle) async throws
 
     /// Post a score to a Game Center leaderboard. Best-effort — if the
     /// local player isn't authenticated, the call is silently dropped (we
@@ -195,9 +208,11 @@ public enum MatchEvent: Sendable {
     /// GameKit's authoritative `matchData` so the view-model can refresh
     /// directly — no second server round-trip, and no risk of a stale
     /// `GKTurnBasedMatch.load(withID:)` cache hit missing the opponent's
-    /// latest moves.
-    case turnReceived(MatchPayload)
-    case matchEnded(winner: String?)
+    /// latest moves. `matchID` lets `AppModel` dispatch the event to the
+    /// right match — events for one match must not bleed into another
+    /// match's view-model.
+    case turnReceived(matchID: String, MatchPayload)
+    case matchEnded(matchID: String, winner: String?)
 }
 
 /// Codable mirror of Coord for the wire (Coord stays a value type internal).

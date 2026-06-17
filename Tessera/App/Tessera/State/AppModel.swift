@@ -39,6 +39,14 @@ final class AppModel {
     /// successful sandbox sign-in.
     var isGameCenterAuthenticated: Bool = false
 
+    /// Most recent multiplayer error worth showing on Home — e.g. an
+    /// inbound match couldn't be attached because GameKit handed us a
+    /// half-seeded match. The restore-at-launch path stays silent; only
+    /// listener-driven attempts (matchmaker-picked or invite-arrived
+    /// matches) populate this, since those are the ones the user just
+    /// triggered and would otherwise wonder why nothing showed up.
+    var matchError: String?
+
     /// Filled by `MultiplayerView` right before it presents the matchmaker.
     /// When `newMatches` fires for a brand-new match we initiated, we use
     /// this to seed its `matchData`. Cleared once consumed.
@@ -102,8 +110,30 @@ final class AppModel {
         Task { [weak self] in
             guard let stream = self?.match_service.newMatches else { return }
             for await matchID in stream {
-                await self?.handleNewMatch(matchID: matchID)
+                await self?.handleNewMatch(matchID: matchID, surfaceErrors: true)
             }
+        }
+        // Centralised inbound dispatch. `AsyncStream` is single-consumer,
+        // so AppModel is the one place that drains `service.inbound` and
+        // forwards each event to the right `MatchViewModel` by matchID.
+        // Each VM used to drain the stream itself, which silently broke
+        // multi-match support: only one VM's `for await` actually
+        // received any given event, and that VM happily applied it
+        // regardless of which match it was for.
+        Task { [weak self] in
+            guard let stream = self?.match_service.inbound else { return }
+            for await event in stream {
+                await self?.dispatchInbound(event)
+            }
+        }
+    }
+
+    private func dispatchInbound(_ event: MatchEvent) {
+        switch event {
+        case .turnReceived(let matchID, let payload):
+            matches.first { $0.handle.id == matchID }?.refresh(payload: payload)
+        case .matchEnded(let matchID, _):
+            matches.first { $0.handle.id == matchID }?.markEnded()
         }
     }
 
@@ -111,11 +141,29 @@ final class AppModel {
     /// matches on Home so the user doesn't have to re-open via a
     /// notification or invite to see them. Each ID is fed through the
     /// same `handleNewMatch` pipeline the listener uses; `handleNewMatch`
-    /// dedupes against `matches`, so re-running this is idempotent.
+    /// dedupes against `matches`, so re-running this is idempotent. The
+    /// restore path passes `surfaceErrors: false` because a stale
+    /// active-match ID (match just ended remotely between `loadMatches`
+    /// and `attach`) is expected and shouldn't surface as a banner.
     private func restoreActiveMatches() async {
         guard let ids = try? await match_service.loadActiveMatchIDs() else { return }
         for id in ids {
-            await handleNewMatch(matchID: id)
+            await handleNewMatch(matchID: id, surfaceErrors: false)
+        }
+    }
+
+    /// User-driven refresh from the home screen's "Refresh matches"
+    /// button. Same pipeline as `restoreActiveMatches` but the user
+    /// initiated it, so we surface attach errors as a banner.
+    func refreshMatches() async {
+        do {
+            let ids = try await match_service.loadActiveMatchIDs()
+            for id in ids {
+                await handleNewMatch(matchID: id, surfaceErrors: true)
+            }
+        } catch {
+            matchError = (error as? LocalizedError)?.errorDescription
+                ?? String(describing: error)
         }
     }
 
@@ -124,7 +172,13 @@ final class AppModel {
     /// if present — that's the player A path (we initiated). Otherwise it's
     /// player B (we accepted an invite) and the matchData already has the
     /// config player A seeded.
-    func handleNewMatch(matchID: String) async {
+    ///
+    /// `surfaceErrors` is true when the caller is the listener or a
+    /// user-initiated refresh; false when restoring at launch (silent).
+    /// Without an error surface, an attach failure (notSeeded, missing
+    /// corpus, bad language pool) used to silently drop the match — the
+    /// player saw "nothing happened" with no clue why.
+    func handleNewMatch(matchID: String, surfaceErrors: Bool = true) async {
         // If this match is already loaded, ignore the duplicate event.
         if matches.contains(where: { $0.handle.id == matchID }) { return }
 
@@ -139,7 +193,12 @@ final class AppModel {
         do {
             let (handle, payload) = try await match_service.attach(
                 matchID: matchID, seedingIfEmpty: seedConfig)
-            guard let corpus else { return }
+            guard let corpus else {
+                if surfaceErrors {
+                    matchError = "The corpus isn't loaded yet — try again in a moment."
+                }
+                return
+            }
             let pool = try corpus.cluedPool(languages: handle.config.languages,
                                             themeSlug: handle.config.themeSlug,
                                             minLen: 3, maxLen: 11)
@@ -148,13 +207,13 @@ final class AppModel {
             let vm = MatchViewModel(service: match_service, handle: handle,
                                     puzzle: puzzle, me: localPlayerID,
                                     payload: payload)
-            vm.startListening()
             // Most-recently-attached lives at the top of the home list.
             matches.insert(vm, at: 0)
         } catch {
-            // Silent on the restore path — a stale active-match ID
-            // (match just ended remotely between loadMatches and load) is
-            // expected and shouldn't surface as a "Problem" banner.
+            if surfaceErrors {
+                matchError = (error as? LocalizedError)?.errorDescription
+                    ?? String(describing: error)
+            }
         }
     }
 
@@ -187,6 +246,23 @@ final class AppModel {
     }
 
     func endMatch(_ vm: MatchViewModel) {
+        matches.removeAll { $0 === vm }
+    }
+
+    /// Permanently leave a multiplayer match — the recovery path for
+    /// corrupt-state games the user can't otherwise progress. Always
+    /// drops the local VM, even when the server-side quit fails (we'd
+    /// rather hide the broken match than leave it stuck on the home
+    /// screen). Surfaces the failure as a banner so the user knows the
+    /// other client may still see the match as active until GameKit
+    /// gets around to reaping it.
+    func quitMatch(_ vm: MatchViewModel) async {
+        do {
+            try await match_service.quit(handle: vm.handle)
+        } catch {
+            matchError = (error as? LocalizedError)?.errorDescription
+                ?? String(describing: error)
+        }
         matches.removeAll { $0 === vm }
     }
 
