@@ -233,19 +233,30 @@ final class MatchViewModel {
     }
 
     /// True when an error from a service write came back because the
-    /// match had already ended on the server — either via our local
-    /// `match.status == .ended` precheck, or the raw `GKError 5003 /
-    /// current-turn-number value: -1` the server returns when the local
-    /// `GKTurnBasedMatch` cache hasn't yet seen the transition. The view
-    /// uses this to route home instead of surfacing a raw GKErrorDomain
+    /// match is effectively over for us — the local
+    /// `match.status == .ended` precheck (`matchAlreadyEnded`), an
+    /// `.active`-opponent shortfall the service auto-ended for us
+    /// (`opponentLeft`), the raw `GKError 5003 / current-turn-number
+    /// value: -1` the server returns when the local
+    /// `GKTurnBasedMatch` cache hasn't yet seen the .ended transition,
+    /// or the raw `GKError 22 / GKServerStatusCode=5097` ("Invalid
+    /// slot state ... foundSlotState='Inactive'") that surfaces when
+    /// the local cache hasn't seen the opponent leave. The view uses
+    /// this to route home instead of surfacing a raw GKErrorDomain
     /// alert that confuses the user.
     func isMatchEndedError(_ error: Error) -> Bool {
         #if canImport(GameKit)
-        if let me = error as? GameKitMatchService.MatchError,
-           me == .matchAlreadyEnded { return true }
+        if let me = error as? GameKitMatchService.MatchError {
+            switch me {
+            case .matchAlreadyEnded, .opponentLeft: return true
+            default: break
+            }
+        }
         #endif
         let desc = String(describing: error)
         return desc.contains("current-turn-number value: -1")
             || desc.contains("GKServerStatusCode=5003")
+            || desc.contains("GKServerStatusCode=5097")
+            || desc.contains("foundSlotState='Inactive'")
     }
 }

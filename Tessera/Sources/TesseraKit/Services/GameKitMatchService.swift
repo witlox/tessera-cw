@@ -152,10 +152,28 @@ public final class GameKitMatchService: NSObject, MatchService, GKLocalPlayerLis
                 cont.resume(returning: matches ?? [])
             }
         }
-        // Filter to non-ended matches; sort most-recently-active first so
-        // the home screen surfaces the match the user is most likely to
+        // Filter to non-ended matches we haven't already quit/lost/won.
+        // `participantQuitInTurn` marks OUR `matchOutcome = .quit` but
+        // keeps the match `.open` so the opponent can finish, so naively
+        // filtering by status alone makes quit matches reappear on
+        // Home every launch. We additionally require our own
+        // participant's `matchOutcome == .none` — i.e. we're still
+        // actively part of this match. Sorted most-recently-active first
+        // so the home screen surfaces what the user is most likely to
         // care about resuming.
-        let active = matches.filter { $0.status == .open || $0.status == .matching }
+        let me = GKLocalPlayer.local.gamePlayerID
+        let active = matches.filter { m in
+            guard m.status == .open || m.status == .matching else { return false }
+            // If our slot hasn't been bound to `GKPlayer` yet (matchmaker
+            // race), keep the match — `attach` will reconcile shortly.
+            // If it's bound and the outcome is set (`.quit`, `.lost`,
+            // etc.), the match is over for us even if the server still
+            // shows it as `.open` so the opponent can finish.
+            guard let mine = m.participants.first(where: {
+                $0.player?.gamePlayerID == me
+            }) else { return true }
+            return mine.matchOutcome == .none
+        }
         // `GKTurnBasedMatch` has no `lastTurnDate` directly — the most
         // recent activity is the latest `lastTurnDate` across its
         // participants, falling back to creationDate for brand-new
@@ -290,10 +308,30 @@ public final class GameKitMatchService: NSObject, MatchService, GKLocalPlayerLis
         // we name the next participant so the match can advance.
         let myTurn = match.currentParticipant?.player?.gamePlayerID == me
         if myTurn {
+            // Same `.active`-only filter as `save(endTurn:)` — handing
+            // off to an Inactive slot would be rejected with GKError
+            // 22 / GKServerStatusCode=5097. When there's no active
+            // opponent we end the match outright instead.
             let nextParticipants = match.participants.filter {
-                $0 !== match.currentParticipant
+                $0 !== match.currentParticipant && $0.status == .active
             }
             let data = match.matchData ?? Data()
+            if nextParticipants.isEmpty {
+                for p in match.participants {
+                    if p.player?.gamePlayerID == me {
+                        p.matchOutcome = .quit
+                    } else if p.matchOutcome == .none {
+                        p.matchOutcome = .quit
+                    }
+                }
+                try await withCheckedThrowingContinuation {
+                    (c: CheckedContinuation<Void, Error>) in
+                    match.endMatchInTurn(withMatch: data) { error in
+                        if let error { c.resume(throwing: error) } else { c.resume() }
+                    }
+                }
+                return
+            }
             try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
                 match.participantQuitInTurn(with: .quit,
                                             nextParticipants: nextParticipants,
@@ -485,8 +523,34 @@ public final class GameKitMatchService: NSObject, MatchService, GKLocalPlayerLis
             // GKServerStatusCode 5102 ("invalid participant / turn state").
             // Identity-against-currentParticipant works regardless of player
             // resolution; see Apple's Turn-Based Matches guide.
+            //
+            // ALSO filter by `.active` status: an opponent who never
+            // accepted (`.invited` / `.matching`), declined, or quit
+            // leaves the slot Inactive server-side, and `endTurn`
+            // rejects it with GKError 22 / GKServerStatusCode=5097
+            // ("Invalid slot state expectedSlotState='Active'
+            // foundSlotState='Inactive'"). When no active opponent
+            // remains, end the match with us as winner so the match
+            // stops haunting `loadActiveMatchIDs` and the UI can
+            // surface a clean "the other player has left" message.
             let nextParticipants = match.participants.filter {
-                $0 !== match.currentParticipant
+                $0 !== match.currentParticipant && $0.status == .active
+            }
+            if nextParticipants.isEmpty {
+                for p in match.participants {
+                    if p.player?.gamePlayerID == me {
+                        p.matchOutcome = .won
+                    } else if p.matchOutcome == .none {
+                        p.matchOutcome = .quit
+                    }
+                }
+                try? await withCheckedThrowingContinuation {
+                    (c: CheckedContinuation<Void, Error>) in
+                    match.endMatchInTurn(withMatch: data) { error in
+                        if let error { c.resume(throwing: error) } else { c.resume() }
+                    }
+                }
+                throw MatchError.opponentLeft
             }
             try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
                 match.endTurn(withNextParticipants: nextParticipants,
@@ -510,6 +574,7 @@ public final class GameKitMatchService: NSObject, MatchService, GKLocalPlayerLis
         case notMyTurn
         case opponentNotReady
         case matchAlreadyEnded
+        case opponentLeft
         public var errorDescription: String? {
             switch self {
             case .notAuthenticated:
@@ -524,6 +589,8 @@ public final class GameKitMatchService: NSObject, MatchService, GKLocalPlayerLis
                 return "Waiting for the other player to join. Try again in a moment."
             case .matchAlreadyEnded:
                 return "This match has already ended. Returning to home…"
+            case .opponentLeft:
+                return "The other player has left the match. Returning to home…"
             }
         }
     }
