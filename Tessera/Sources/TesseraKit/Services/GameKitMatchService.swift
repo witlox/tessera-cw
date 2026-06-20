@@ -308,12 +308,15 @@ public final class GameKitMatchService: NSObject, MatchService, GKLocalPlayerLis
         // we name the next participant so the match can advance.
         let myTurn = match.currentParticipant?.player?.gamePlayerID == me
         if myTurn {
-            // Same `.active`-only filter as `save(endTurn:)` — handing
-            // off to an Inactive slot would be rejected with GKError
-            // 22 / GKServerStatusCode=5097. When there's no active
-            // opponent we end the match outright instead.
-            let nextParticipants = match.participants.filter {
-                $0 !== match.currentParticipant && $0.status == .active
+            // Same not-gone filter as `save(endTurn:)` — handing off
+            // to a `.declined`, `.done`, `.quit`, etc. slot would
+            // hit GKError 22 / GKServerStatusCode=5097. `.invited`
+            // and `.matching` are preserved so a fresh opponent who
+            // hasn't accepted yet still gets the handoff.
+            let nextParticipants = match.participants.filter { p in
+                p !== match.currentParticipant
+                    && p.matchOutcome == .none
+                    && canTakeNextTurn(p.status)
             }
             let data = match.matchData ?? Data()
             if nextParticipants.isEmpty {
@@ -415,6 +418,20 @@ public final class GameKitMatchService: NSObject, MatchService, GKLocalPlayerLis
     }
 
     // MARK: - Match lookup helpers
+
+    /// Whether a participant in this status could still take a turn.
+    /// `.invited` and `.matching` count — they're how a freshly-invited
+    /// opponent receives their first turn after the initial seed-and-
+    /// endTurn from Player A. `.declined`, `.done`, and `.unknown` do
+    /// not — handing the turn off to them is what triggered GKError
+    /// 22 / GKServerStatusCode=5097 ("foundSlotState='Inactive'").
+    private func canTakeNextTurn(_ status: GKTurnBasedParticipant.Status) -> Bool {
+        switch status {
+        case .invited, .matching, .active: return true
+        case .declined, .done, .unknown: return false
+        @unknown default: return false
+        }
+    }
 
     private func load(matchID: String) async throws -> GKTurnBasedMatch {
         try await withCheckedThrowingContinuation { cont in
@@ -524,17 +541,20 @@ public final class GameKitMatchService: NSObject, MatchService, GKLocalPlayerLis
             // Identity-against-currentParticipant works regardless of player
             // resolution; see Apple's Turn-Based Matches guide.
             //
-            // ALSO filter by `.active` status: an opponent who never
-            // accepted (`.invited` / `.matching`), declined, or quit
-            // leaves the slot Inactive server-side, and `endTurn`
-            // rejects it with GKError 22 / GKServerStatusCode=5097
-            // ("Invalid slot state expectedSlotState='Active'
-            // foundSlotState='Inactive'"). When no active opponent
-            // remains, end the match with us as winner so the match
-            // stops haunting `loadActiveMatchIDs` and the UI can
-            // surface a clean "the other player has left" message.
-            let nextParticipants = match.participants.filter {
-                $0 !== match.currentParticipant && $0.status == .active
+            // ALSO exclude participants who can't take a turn anymore:
+            // `.declined`, `.done`, `.unknown`, or any whose outcome
+            // has been resolved (`.quit`, `.lost`, etc.). `.invited`
+            // and `.matching` STAY — they're how a fresh opponent
+            // receives their first turn after accepting an invite,
+            // and excluding them would auto-end the very first
+            // turn-handoff on a brand-new match. The earlier filter
+            // was too strict — it kept only `.active`, so Player A's
+            // first Check/Pass on a freshly-invited Player B (still
+            // `.invited`) collapsed the match before it began.
+            let nextParticipants = match.participants.filter { p in
+                p !== match.currentParticipant
+                    && p.matchOutcome == .none
+                    && canTakeNextTurn(p.status)
             }
             if nextParticipants.isEmpty {
                 for p in match.participants {
